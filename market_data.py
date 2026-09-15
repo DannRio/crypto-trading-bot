@@ -1,16 +1,43 @@
 import ccxt
+import pandas as pd
 
 
 def create_exchange():
-    exchange = ccxt.kraken({
+    return ccxt.kraken({
         "enableRateLimit": True
     })
-
-    return exchange
 
 
 def get_ticker(symbol):
     exchange = create_exchange()
-    ticker = exchange.fetch_ticker(symbol)
+    return exchange.fetch_ticker(symbol)
 
-    return ticker
+
+def get_ohlcv(symbol, timeframe="1h", limit=200):
+    exchange = create_exchange()
+
+    candles = exchange.fetch_ohlcv(
+        symbol,
+        timeframe=timeframe,
+        limit=limit
+    )
+
+    df = pd.DataFrame(
+        candles,
+        columns=[
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume"
+        ]
+    )
+
+    df["timestamp"] = pd.to_datetime(
+        df["timestamp"],
+        unit="ms",
+        utc=True
+    )
+
+    return df
