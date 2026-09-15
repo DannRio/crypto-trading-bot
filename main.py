@@ -1,6 +1,13 @@
-import ccxt
-import pandas as pd
-import numpy as np
+from market_data import get_ticker
 
-print("Trading bot environment is ready.")
-print("CCXT version:", ccxt.__version__)
+
+symbol = "ZEC/USD"
+
+ticker = get_ticker(symbol)
+
+print(f"Symbol: {symbol}")
+print(f"Last price: ${ticker['last']}")
+print(f"Bid: ${ticker['bid']}")
+print(f"Ask: ${ticker['ask']}")
+print(f"24h High: ${ticker['high']}")
+print(f"24h Low: ${ticker['low']}")
