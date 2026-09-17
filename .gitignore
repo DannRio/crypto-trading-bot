@@ -1,5 +1,21 @@
+# Python virtual environment
 .venv/
+
+# Secrets
 .env
+*.env
+
+# Python cache
 __pycache__/
 *.pyc
+
+# Logs
 *.log
+
+# Historical market data
+data/raw/*
+data/processed/*
+
+# Keep the folder structure in Git
+!data/raw/.gitkeep
+!data/processed/.gitkeep
