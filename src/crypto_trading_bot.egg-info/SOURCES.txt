@@ -1,0 +1,17 @@
+README.md
+pyproject.toml
+src/crypto_trading_bot.egg-info/PKG-INFO
+src/crypto_trading_bot.egg-info/SOURCES.txt
+src/crypto_trading_bot.egg-info/dependency_links.txt
+src/crypto_trading_bot.egg-info/requires.txt
+src/crypto_trading_bot.egg-info/top_level.txt
+src/trading_bot/__init__.py
+src/trading_bot/alerts/__init__.py
+src/trading_bot/analysis/__init__.py
+src/trading_bot/backtesting/__init__.py
+src/trading_bot/core/__init__.py
+src/trading_bot/data/__init__.py
+src/trading_bot/exchanges/__init__.py
+src/trading_bot/risk/__init__.py
+src/trading_bot/scanner/__init__.py
+src/trading_bot/strategies/__init__.py
