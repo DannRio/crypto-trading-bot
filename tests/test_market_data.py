@@ -28,25 +28,19 @@ def sample_candles():
 
 
 def test_normalize_ohlcv_columns():
-    df = normalize_ohlcv(
-        sample_candles()
-    )
+    df = normalize_ohlcv(sample_candles())
 
     assert list(df.columns) == OHLCV_COLUMNS
 
 
-def test_normalize_ohlcv_timestamp():
-    df = normalize_ohlcv(
-        sample_candles()
-    )
+def test_normalize_ohlcv_timestamp_is_utc():
+    df = normalize_ohlcv(sample_candles())
 
     assert pd.api.types.is_datetime64_any_dtype(
         df["timestamp"]
     )
 
-    assert str(
-        df["timestamp"].dt.tz
-    ) == "UTC"
+    assert str(df["timestamp"].dt.tz) == "UTC"
 
 
 def test_normalize_ohlcv_empty():
@@ -54,3 +48,14 @@ def test_normalize_ohlcv_empty():
 
     assert df.empty
     assert list(df.columns) == OHLCV_COLUMNS
+
+
+def test_normalize_ohlcv_removes_duplicates():
+    candles = sample_candles()
+
+    candles.append(candles[0])
+
+    df = normalize_ohlcv(candles)
+
+    assert len(df) == 2
+    assert df["timestamp"].is_unique

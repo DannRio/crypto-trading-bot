@@ -28,9 +28,14 @@ def normalize_ohlcv(candles: list) -> pd.DataFrame:
         utc=True,
     )
 
-    df = df.sort_values(
-        "timestamp"
-    ).reset_index(drop=True)
+    df = (
+        df.sort_values("timestamp")
+        .drop_duplicates(
+            subset=["timestamp"],
+            keep="last",
+        )
+        .reset_index(drop=True)
+    )
 
     return df
 

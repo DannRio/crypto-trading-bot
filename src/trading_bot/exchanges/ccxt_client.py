@@ -17,10 +17,7 @@ class CCXTClient:
                 f"Unsupported CCXT exchange: {self.exchange_id}"
             )
 
-        exchange_class = getattr(
-            ccxt,
-            self.exchange_id,
-        )
+        exchange_class = getattr(ccxt, self.exchange_id)
 
         return exchange_class(
             {
