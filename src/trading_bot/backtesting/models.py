@@ -16,6 +16,11 @@ class CompletedTrade:
     position_size: float
     pnl: float
     exit_reason: str
+    strategy: str = "baseline"
+    score: int = 0
+    regime: str = ""
+    risk_amount: float = 0.0
+    r_multiple: float = 0.0
 
 
 @dataclass

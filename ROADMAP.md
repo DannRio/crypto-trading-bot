@@ -6,10 +6,11 @@
 - [x] Existing tests migrated
 - [x] Existing prototype migrated without regression
 - [x] CLI entry point
+- [x] Read-only web dashboard
 - [ ] Central configuration profiles
 
 ## Phase 2 — Market Data
-- [ ] Historical bulk-data loader
+- [x] Historical bulk-data loader
 - [x] OHLCV validation
 - [x] Missing candle detection
 - [x] Duplicate detection
@@ -43,15 +44,19 @@
 - [ ] Portfolio-wide exposure limits
 - [ ] Daily loss controls
 
-## Phase 6 — Backtesting
+## Phase 6 — Research & Backtesting
+- [x] Shared scanner/backtest DecisionEngine
 - [x] Fee support
 - [x] Slippage support
 - [x] Long + short simulation
 - [x] Performance metrics
-- [ ] Multiple years of local historical data
-- [ ] Multiple-asset batch research
-- [ ] Out-of-sample testing
-- [ ] Walk-forward testing
+- [x] Average R and setup-score diagnostics
+- [x] Spot long-only research enforcement
+- [x] Multiple years of local historical data
+- [x] Multiple-asset batch research
+- [x] Train / validation / out-of-sample testing
+- [x] Fixed-parameter walk-forward stability testing
+- [ ] Per-window parameter optimization
 
 ## Phase 7 — Market Scanner
 - [x] Scan multiple symbols

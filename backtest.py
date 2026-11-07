@@ -1,11 +1,13 @@
-from trading_bot.backtesting.engine import run_backtest
-from trading_bot.backtesting.models import (
+from trading_bot.backtesting import (
     BacktestResult,
     CompletedTrade,
+    run_backtest,
+    run_decision_backtest,
 )
 
 __all__ = [
     "BacktestResult",
     "CompletedTrade",
     "run_backtest",
+    "run_decision_backtest",
 ]

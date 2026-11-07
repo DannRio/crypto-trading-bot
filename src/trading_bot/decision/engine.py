@@ -1,0 +1,53 @@
+import pandas as pd
+
+from trading_bot.analysis import analyze_market_structure
+from trading_bot.core.enums import SetupStatus
+from trading_bot.decision.models import DecisionResult
+from trading_bot.planning import create_trade_setup
+from trading_bot.strategies import evaluate_trend_continuation
+
+
+class DecisionEngine:
+    """Single strategy path used by scanner and research backtests."""
+
+    def __init__(
+        self,
+        account_equity: float = 10_000,
+        risk_percent: float = 0.01,
+        min_confirmed_score: int = 70,
+        min_forming_score: int = 50,
+    ):
+        self.account_equity = account_equity
+        self.risk_percent = risk_percent
+        self.min_confirmed_score = min_confirmed_score
+        self.min_forming_score = min_forming_score
+
+    def evaluate(self, data: pd.DataFrame) -> DecisionResult:
+        structure = analyze_market_structure(data)
+        assessment = evaluate_trend_continuation(
+            data,
+            structure,
+            min_confirmed_score=self.min_confirmed_score,
+            min_forming_score=self.min_forming_score,
+        )
+
+        setup = None
+        if assessment.status == SetupStatus.CONFIRMED:
+            latest = data.iloc[-1]
+            setup = create_trade_setup(
+                signal=assessment.signal,
+                status=assessment.status,
+                score=assessment.score,
+                reasons=assessment.reasons,
+                entry_price=float(latest["close"]),
+                atr=float(latest["atr_14"]),
+                structure=structure,
+                account_equity=self.account_equity,
+                risk_percent=self.risk_percent,
+            )
+
+        return DecisionResult(
+            assessment=assessment,
+            structure=structure,
+            setup=setup,
+        )

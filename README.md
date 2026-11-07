@@ -2,7 +2,7 @@
 
 A Python engine for scanning crypto markets, producing rule-qualified trade setups, sizing risk, and backtesting strategies across CCXT-supported exchanges.
 
-## Current v1 capabilities
+## Current capabilities
 
 - Universal public market-data access through CCXT.
 - OHLCV normalization and quality validation.
@@ -11,7 +11,11 @@ A Python engine for scanning crypto markets, producing rule-qualified trade setu
 - Trend-continuation setup scoring: CONFIRMED, FORMING, or NO_TRADE.
 - Risk-defined trade plans with entry zone, stop, TP1, TP2, size, notional, and actual account risk.
 - Multi-symbol scanning and ranking.
-- Baseline backtester with long/short, fees, slippage, drawdown, win rate, and profit factor.
+- Shared DecisionEngine used by both scanner and historical research.
+- Scanner-aligned backtester with fees, slippage, drawdown, win rate, profit factor, and R-multiples.
+- Paginated multi-year historical downloader and local dataset store.
+- Batch research across multiple symbols and timeframes.
+- Read-only local web dashboard.
 
 The engine deliberately does **not** place live orders yet. Execution should consume validated setups only after out-of-sample and paper-trading validation.
 
@@ -84,7 +88,7 @@ The setup score is a rules score, **not a probability of profit**.
 python run_backtest.py
 ```
 
-The current backtester is a baseline research engine. Before real-money automation, expand it to multi-year local data, realistic venue-specific costs, out-of-sample testing, and walk-forward testing.
+The quick backtest now uses the same decision rules as the market scanner. It is still a short-window smoke test; use the historical research pipeline for serious validation.
 
 ## Architecture
 
@@ -107,10 +111,62 @@ Scanner / ranked setups
 Core packages live under `src/trading_bot/`:
 
 - `analysis/` indicators and market structure
-- `backtesting/` simulation and metrics
-- `data/` market data normalization and validation
+- `backtesting/` legacy and scanner-aligned simulation
+- `decision/` shared decision path used by scanner and research
+- `data/` market data normalization, validation, pagination, and historical storage
 - `exchanges/` exchange adapters
 - `planning/` entry/stop/target planning
+- `research/` multi-dataset historical experiments
 - `risk/` position sizing and controls
 - `scanner/` multi-market scanning
 - `strategies/` testable strategy rules
+- `web/` local research dashboard
+
+
+## Web dashboard
+
+Install and run the local read-only dashboard:
+
+~~~powershell
+python -m pip install -e ".[web]"
+python -m uvicorn trading_bot.web.app:app --host 127.0.0.1 --port 8000
+~~~
+
+Open http://127.0.0.1:8000. The dashboard does not place orders.
+
+## Multi-year historical research
+
+Download candles once and keep them locally under data/history/:
+
+~~~powershell
+crypto-research download --exchange kucoin --market-type spot --symbols BTC/USDT,ETH/USDT,SOL/USDT --timeframes 1h,4h --start 2022-01-01 --end 2026-11-01
+~~~
+
+Run the scanner-aligned strategy over those local datasets:
+
+~~~powershell
+crypto-research backtest --exchange kucoin --market-type spot --symbols BTC/USDT,ETH/USDT,SOL/USDT --timeframes 1h,4h --min-score 70 --risk-percent 1 --fee-rate 0.001 --slippage-bps 5 --export data/processed/research_summary.csv
+~~~
+
+Spot research is long-only. Non-spot research can evaluate both LONG and SHORT setups. Research output includes trade count, return, drawdown, win rate, profit factor, average P&L, average R, and setup-score diagnostics.
+
+
+## Out-of-sample evaluation
+
+Use explicit chronological cutoffs so later periods stay unseen during development:
+
+~~~powershell
+crypto-research oos --exchange kucoin --market-type spot --symbols BTC/USDT,ETH/USDT --timeframes 1h --train-cutoff 2024-01-01 --validation-cutoff 2025-01-01 --min-score 70 --export data/processed/oos.csv
+~~~
+
+The output is split into TRAIN, VALIDATION, and TEST periods using the same scanner-aligned rules and cost assumptions.
+
+## Walk-forward stability
+
+Run rolling fixed-parameter train/test windows:
+
+~~~powershell
+crypto-research walk-forward --exchange kucoin --market-type spot --symbols BTC/USDT --timeframes 1h --train-bars 8760 --test-bars 2160 --step-bars 2160 --min-score 70 --export data/processed/walk_forward.csv
+~~~
+
+This is a stability test, not parameter optimization. Parameter selection per training window is a later research layer.
