@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crypto-trading-bot"
-version = "0.2.0"
+version = "0.3.0"
 description = "Universal crypto trading decision and research engine"
 requires-python = ">=3.12"
 
@@ -15,15 +15,26 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+web = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+]
 dev = [
     "pytest",
+    "httpx>=0.27",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
 ]
 
 [project.scripts]
 crypto-engine = "trading_bot.cli:main"
+crypto-research = "trading_bot.research.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"trading_bot.web" = ["index.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
