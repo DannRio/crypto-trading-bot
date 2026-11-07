@@ -36,9 +36,13 @@ class CCXTClient:
         symbol: str,
         timeframe: str = "1h",
         limit: int = 500,
+        since: int | None = None,
+        params: dict | None = None,
     ):
         return self.exchange.fetch_ohlcv(
             symbol,
             timeframe=timeframe,
+            since=since,
             limit=limit,
+            params=params or {},
         )
