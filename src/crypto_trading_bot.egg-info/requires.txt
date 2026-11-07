@@ -1,6 +1,0 @@
-ccxt
-numpy
-pandas
-
-[dev]
-pytest
