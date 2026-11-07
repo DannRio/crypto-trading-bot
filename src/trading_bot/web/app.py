@@ -133,6 +133,7 @@ def backtest(
     limit: int = Query(720, ge=250, le=1000),
     equity: float = Query(10000.0, gt=0, le=100_000_000),
     risk_percent: float = Query(1.0, gt=0, le=5),
+    min_score: int = Query(70, ge=0, le=100),
     fee_rate: float = Query(0.001, ge=0, le=0.05),
     slippage_bps: float = Query(5.0, ge=0, le=500),
 ):
@@ -152,6 +153,7 @@ def backtest(
         result = run_backtest(
             data, initial_equity=equity, risk_percent=risk_percent / 100,
             fee_rate=fee_rate, slippage_bps=slippage_bps,
+            min_confirmed_score=min_score, allow_short=market_type != "spot",
         )
     except HTTPException:
         raise
@@ -161,7 +163,15 @@ def backtest(
     return {
         "symbol": symbol, "exchange": exchange, "timeframe": timeframe,
         "data_rows": len(closed),
-        "assumptions": {"fee_rate_per_side": fee_rate, "slippage_bps_per_side": slippage_bps},
+        "strategy": "trend_continuation",
+        "assumptions": {
+            "fee_rate_per_side": fee_rate,
+            "slippage_bps_per_side": slippage_bps,
+            "min_confirmed_score": min_score,
+            "entry": "next_open_within_scanner_entry_zone",
+            "exit": "full_position_at_stop_or_tp2",
+            "shorts_enabled": market_type != "spot",
+        },
         "metrics": _safe({
             "initial_equity": result.initial_equity,
             "final_equity": result.final_equity,
@@ -171,7 +181,9 @@ def backtest(
             "win_rate_pct": result.win_rate_pct,
             "profit_factor": result.profit_factor,
             "average_pnl": result.average_pnl,
+            "signals_seen": result.signals_seen,
+            "entries_skipped": result.entries_skipped,
         }),
         "recent_trades": _safe(result.trades.tail(10).to_dict("records")),
-        "warning": "Research only. OHLC fills omit funding, liquidation and exchange-specific execution.",
+        "warning": "Research only. Scanner-aligned signals, next-open entry-zone fills, stop-first OHLC exits. Futures funding, liquidation, contract multipliers and exchange-specific execution are not simulated.",
     }
