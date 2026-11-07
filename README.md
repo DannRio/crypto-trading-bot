@@ -144,3 +144,38 @@ paper broker, live order placement or portfolio reconciliation. Bind on
 illustrative fees and slippage but omits contract funding, liquidation and
 venue-specific matching rules. Risk and notional are denominated in the
 symbol's quote currency; use a matching account-equity denomination.
+
+## Scanner-aligned backtesting (research)
+
+The browser dashboard and `python run_backtest.py` now use the **same
+trend-continuation qualification and planning functions as the scanner**.
+Old RSI-cross-only results are not comparable to the new results.
+
+Simulation rules:
+
+- Each signal is evaluated on fully closed historical candles, with a
+  **220-candle warmup**. No same-candle look-ahead entries.
+- Only CONFIRMED setups qualify, using the configured minimum score.
+- A signal fills at the **next candle open**, including adverse slippage,
+  **only if the executed fill is inside the original scanner entry zone**.
+  Gaps beyond the zone are counted under `entries_skipped`.
+- Risk-based size is recalculated at the fill using modeled entry/stop
+  slippage and fees, capped at 100% of current equity notional by default.
+- Keep scanner's original stop and TP2 (entire position exits at TP2);
+  TP1 and partial exits are **not simulated**. If stop and target are touched
+  within the same bar, the stop wins. Stops gapping past the stop level
+  fill at the worse candle open plus slippage.
+- Spot backtests **do not short**. The derivatives simulator allows shorts
+  but has **no** leverage/margin, funding, liquidation, contract multiplier,
+  market-depth or partial-fill model.
+- Costs default to 0.1% fee per side and 5 basis points of slippage per side;
+  set actual costs for your venue before interpreting outcomes.
+
+The counts `signals_seen` and `entries_skipped` distinguish rules-qualified
+signals from trades the next bar could not enter. Low trade counts may
+indicate a restrictive entry zone rather than lack of signals.
+
+**Important:** Historical OHLCV candles usually cover only a short period
+via a single CCXT fetch; several years, walk-forward validation, and
+futures-specific execution modeling remain outstanding. Passing code
+tests does **not** imply strategy profitability.

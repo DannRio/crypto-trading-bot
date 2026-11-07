@@ -29,3 +29,5 @@ class BacktestResult:
     profit_factor: float
     average_pnl: float
     trades: pd.DataFrame
+    signals_seen: int = 0
+    entries_skipped: int = 0
