@@ -115,6 +115,7 @@ Core packages live under `src/trading_bot/`:
 - `decision/` shared decision path used by scanner and research
 - `data/` market data normalization, validation, pagination, and historical storage
 - `exchanges/` exchange adapters
+- `paper/` simulated broker, portfolio risk, journal, and replay
 - `planning/` entry/stop/target planning
 - `research/` multi-dataset historical experiments
 - `risk/` position sizing and controls
@@ -170,3 +171,26 @@ crypto-research walk-forward --exchange kucoin --market-type spot --symbols BTC/
 ~~~
 
 This is a stability test, not parameter optimization. Parameter selection per training window is a later research layer.
+
+
+## Paper trading
+
+Replay the shared decision engine through the simulated broker using a local historical dataset:
+
+~~~powershell
+crypto-paper replay --exchange kucoin --market-type spot --symbol BTC/USDT --timeframe 1h --equity 10000 --risk-percent 1 --min-score 70
+~~~
+
+Inspect the SQLite journal:
+
+~~~powershell
+crypto-paper status --journal data/paper/paper_trading.db
+~~~
+
+Verify that paper execution and historical backtesting use the same fill assumptions:
+
+~~~powershell
+crypto-paper compare --exchange kucoin --market-type spot --symbol BTC/USDT --timeframe 1h --min-score 70
+~~~
+
+The paper broker models pending-entry expiry, fees, slippage, stop/TP2 exits, duplicate exposure protection, portfolio open-risk limits, position tracking, realized/unrealized P&L, and persistent orders/trades. Local paper state is stored under data/paper/ and is ignored by Git.

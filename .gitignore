@@ -16,10 +16,11 @@ dist/
 # Logs
 *.log
 
-# Historical market data
+# Historical and paper-trading data
 data/raw/*
 data/processed/*
 data/history/*
+data/paper/*
 
 # Keep the legacy folder structure in Git
 !data/raw/.gitkeep

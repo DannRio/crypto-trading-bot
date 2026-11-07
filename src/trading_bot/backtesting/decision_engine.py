@@ -10,7 +10,6 @@ from trading_bot.backtesting.metrics import (
 from trading_bot.backtesting.models import BacktestResult, CompletedTrade
 from trading_bot.core.enums import Signal, SetupStatus
 from trading_bot.decision import DecisionEngine
-from trading_bot.planning import create_trade_setup
 
 
 def _entry_with_slippage(
@@ -95,33 +94,27 @@ def run_decision_backtest(
                     slippage_bps,
                 )
 
-                actual_setup = create_trade_setup(
-                    signal=signal,
-                    status=SetupStatus.CONFIRMED,
-                    score=pending["assessment"].score,
-                    reasons=pending["assessment"].reasons,
-                    entry_price=executed_entry,
-                    atr=pending["atr"],
-                    structure=pending["structure"],
-                    account_equity=equity,
-                    risk_percent=risk_percent,
+                setup = pending["setup"]
+                entry_fee = (
+                    executed_entry
+                    * setup.position_size
+                    * fee_rate
                 )
-
-                if actual_setup is not None:
-                    entry_fee = (
-                        actual_setup.reference_entry
-                        * actual_setup.position_size
-                        * fee_rate
-                    )
-                    equity -= entry_fee
-                    position = {
-                        "setup": actual_setup,
-                        "signal_time": pending["signal_time"],
-                        "entry_time": candle["timestamp"],
-                        "entry_fee": entry_fee,
-                        "score": pending["assessment"].score,
-                        "regime": pending["structure"].regime.value,
-                    }
+                risk_amount = (
+                    abs(executed_entry - setup.stop_loss)
+                    * setup.position_size
+                )
+                equity -= entry_fee
+                position = {
+                    "setup": setup,
+                    "entry_price": executed_entry,
+                    "risk_amount": risk_amount,
+                    "signal_time": pending["signal_time"],
+                    "entry_time": candle["timestamp"],
+                    "entry_fee": entry_fee,
+                    "score": pending["assessment"].score,
+                    "regime": pending["structure"].regime.value,
+                }
                 pending = None
             else:
                 pending["bars_left"] -= 1
@@ -157,7 +150,7 @@ def run_decision_backtest(
                 )
                 gross_pnl = _gross_pnl(
                     setup.signal,
-                    setup.reference_entry,
+                    position["entry_price"],
                     executed_exit,
                     setup.position_size,
                 )
@@ -172,7 +165,7 @@ def run_decision_backtest(
                     - position["entry_fee"]
                     - exit_fee
                 )
-                risk_amount = setup.actual_risk_amount
+                risk_amount = position["risk_amount"]
                 r_multiple = (
                     net_pnl / risk_amount
                     if risk_amount > 0
@@ -185,7 +178,7 @@ def run_decision_backtest(
                         signal_time=position["signal_time"],
                         entry_time=position["entry_time"],
                         exit_time=candle["timestamp"],
-                        entry_price=setup.reference_entry,
+                        entry_price=position["entry_price"],
                         exit_price=executed_exit,
                         stop_loss=setup.stop_loss,
                         take_profit=setup.take_profit_2,
@@ -206,7 +199,7 @@ def run_decision_backtest(
             setup = position["setup"]
             mark_equity += _gross_pnl(
                 setup.signal,
-                setup.reference_entry,
+                position["entry_price"],
                 float(candle["close"]),
                 setup.position_size,
             )
@@ -259,14 +252,14 @@ def run_decision_backtest(
         )
         gross_pnl = _gross_pnl(
             setup.signal,
-            setup.reference_entry,
+            position["entry_price"],
             executed_exit,
             setup.position_size,
         )
         exit_fee = executed_exit * setup.position_size * fee_rate
         equity += gross_pnl - exit_fee
         net_pnl = gross_pnl - position["entry_fee"] - exit_fee
-        risk_amount = setup.actual_risk_amount
+        risk_amount = position["risk_amount"]
         r_multiple = (
             net_pnl / risk_amount
             if risk_amount > 0
@@ -279,7 +272,7 @@ def run_decision_backtest(
                 signal_time=position["signal_time"],
                 entry_time=position["entry_time"],
                 exit_time=candle["timestamp"],
-                entry_price=setup.reference_entry,
+                entry_price=position["entry_price"],
                 exit_price=executed_exit,
                 stop_loss=setup.stop_loss,
                 take_profit=setup.take_profit_2,
