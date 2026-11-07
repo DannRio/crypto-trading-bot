@@ -1,11 +1,10 @@
 from collections.abc import Callable
 
-from trading_bot.analysis import add_indicators, analyze_market_structure
+from trading_bot.analysis import add_indicators
 from trading_bot.core.enums import SetupStatus
 from trading_bot.data import get_ohlcv, validate_ohlcv
-from trading_bot.planning import create_trade_setup
+from trading_bot.decision import DecisionEngine
 from trading_bot.scanner.models import ScanResult
-from trading_bot.strategies import evaluate_trend_continuation
 
 
 class MarketScanner:
@@ -40,49 +39,51 @@ class MarketScanner:
             )
             if df.empty or len(df) < 2:
                 return ScanResult(
-                    self.exchange_id, self.market_type, symbol, self.timeframe,
-                    None, None, None, None, "No usable market data received."
+                    self.exchange_id,
+                    self.market_type,
+                    symbol,
+                    self.timeframe,
+                    None,
+                    None,
+                    None,
+                    None,
+                    "No usable market data received.",
                 )
 
             closed = df.iloc[:-1].copy()
-            quality = validate_ohlcv(closed, timeframe=self.timeframe, min_rows=220)
+            quality = validate_ohlcv(
+                closed,
+                timeframe=self.timeframe,
+                min_rows=220,
+            )
             if not quality.valid:
                 return ScanResult(
-                    self.exchange_id, self.market_type, symbol, self.timeframe,
-                    None, None, None, quality, "; ".join(quality.issues)
+                    self.exchange_id,
+                    self.market_type,
+                    symbol,
+                    self.timeframe,
+                    None,
+                    None,
+                    None,
+                    quality,
+                    "; ".join(quality.issues),
                 )
 
             data = add_indicators(closed)
-            structure = analyze_market_structure(data)
-            assessment = evaluate_trend_continuation(
-                data,
-                structure,
+            decision = DecisionEngine(
+                account_equity=self.account_equity,
+                risk_percent=self.risk_percent,
                 min_confirmed_score=self.min_confirmed_score,
-            )
-
-            setup = None
-            if assessment.status == SetupStatus.CONFIRMED:
-                latest = data.iloc[-1]
-                setup = create_trade_setup(
-                    signal=assessment.signal,
-                    status=assessment.status,
-                    score=assessment.score,
-                    reasons=assessment.reasons,
-                    entry_price=float(latest["close"]),
-                    atr=float(latest["atr_14"]),
-                    structure=structure,
-                    account_equity=self.account_equity,
-                    risk_percent=self.risk_percent,
-                )
+            ).evaluate(data)
 
             return ScanResult(
                 self.exchange_id,
                 self.market_type,
                 symbol,
                 self.timeframe,
-                assessment,
-                structure,
-                setup,
+                decision.assessment,
+                decision.structure,
+                decision.setup,
                 quality,
             )
         except Exception as exc:
