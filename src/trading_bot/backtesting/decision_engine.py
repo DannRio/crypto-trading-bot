@@ -169,6 +169,12 @@ def run_decision_backtest(
                     - position["entry_fee"]
                     - exit_fee
                 )
+                risk_amount = setup.actual_risk_amount
+                r_multiple = (
+                    net_pnl / risk_amount
+                    if risk_amount > 0
+                    else 0.0
+                )
 
                 trades.append(
                     CompletedTrade(
@@ -186,6 +192,8 @@ def run_decision_backtest(
                         strategy="trend_continuation",
                         score=position["score"],
                         regime=position["regime"],
+                        risk_amount=risk_amount,
+                        r_multiple=r_multiple,
                     )
                 )
                 position = None
@@ -253,6 +261,12 @@ def run_decision_backtest(
         exit_fee = executed_exit * setup.position_size * fee_rate
         equity += gross_pnl - exit_fee
         net_pnl = gross_pnl - position["entry_fee"] - exit_fee
+        risk_amount = setup.actual_risk_amount
+        r_multiple = (
+            net_pnl / risk_amount
+            if risk_amount > 0
+            else 0.0
+        )
 
         trades.append(
             CompletedTrade(
@@ -270,6 +284,8 @@ def run_decision_backtest(
                 strategy="trend_continuation",
                 score=position["score"],
                 regime=position["regime"],
+                risk_amount=risk_amount,
+                r_multiple=r_multiple,
             )
         )
 
