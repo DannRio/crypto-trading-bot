@@ -54,8 +54,9 @@
 - [x] Spot long-only research enforcement
 - [x] Multiple years of local historical data
 - [x] Multiple-asset batch research
-- [ ] Train / validation / out-of-sample testing
-- [ ] Walk-forward testing
+- [x] Train / validation / out-of-sample testing
+- [x] Fixed-parameter walk-forward stability testing
+- [ ] Per-window parameter optimization
 
 ## Phase 7 — Market Scanner
 - [x] Scan multiple symbols
