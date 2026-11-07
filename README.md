@@ -149,3 +149,24 @@ crypto-research backtest --exchange kucoin --market-type spot --symbols BTC/USDT
 ~~~
 
 Spot research is long-only. Non-spot research can evaluate both LONG and SHORT setups. Research output includes trade count, return, drawdown, win rate, profit factor, average P&L, average R, and setup-score diagnostics.
+
+
+## Out-of-sample evaluation
+
+Use explicit chronological cutoffs so later periods stay unseen during development:
+
+~~~powershell
+crypto-research oos --exchange kucoin --market-type spot --symbols BTC/USDT,ETH/USDT --timeframes 1h --train-cutoff 2024-01-01 --validation-cutoff 2025-01-01 --min-score 70 --export data/processed/oos.csv
+~~~
+
+The output is split into TRAIN, VALIDATION, and TEST periods using the same scanner-aligned rules and cost assumptions.
+
+## Walk-forward stability
+
+Run rolling fixed-parameter train/test windows:
+
+~~~powershell
+crypto-research walk-forward --exchange kucoin --market-type spot --symbols BTC/USDT --timeframes 1h --train-bars 8760 --test-bars 2160 --step-bars 2160 --min-score 70 --export data/processed/walk_forward.csv
+~~~
+
+This is a stability test, not parameter optimization. Parameter selection per training window is a later research layer.
