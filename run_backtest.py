@@ -46,14 +46,14 @@ def main():
     print(f"Market type:       {MARKET_TYPE}")
     print(f"Symbol:            {SYMBOL}")
     print(f"Timeframe:         {TIMEFRAME}")
-    print(f"Starting equity:   $${result.initial_equity:,.2f}")
-    print(f"Final equity:      $${result.final_equity:,.2f}")
+    print(f"Starting equity:   ${result.initial_equity:,.2f}")
+    print(f"Final equity:      ${result.final_equity:,.2f}")
     print(f"Return:            {result.total_return_pct:.2f}%")
     print(f"Max drawdown:      {result.max_drawdown_pct:.2f}%")
     print(f"Trades:            {result.total_trades}")
     print(f"Win rate:          {result.win_rate_pct:.2f}%")
     print(f"Profit factor:     {result.profit_factor:.2f}")
-    print(f"Average P&L:       $${result.average_pnl:.2f}")
+    print(f"Average P&L:       ${result.average_pnl:.2f}")
 
     if not result.trades.empty:
         print("\n=== LAST 10 TRADES ===")
