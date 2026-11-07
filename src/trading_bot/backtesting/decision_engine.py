@@ -51,6 +51,7 @@ def run_decision_backtest(
     slippage_bps: float = 5.0,
     warmup_candles: int = 220,
     entry_valid_bars: int = 3,
+    decision_lookback: int = 250,
     allow_short: bool = True,
 ) -> BacktestResult:
     """Backtest the same scored decision path used by MarketScanner.
@@ -63,6 +64,8 @@ def run_decision_backtest(
         raise ValueError("initial_equity must be positive.")
     if entry_valid_bars <= 0:
         raise ValueError("entry_valid_bars must be positive.")
+    if decision_lookback < 21:
+        raise ValueError("decision_lookback must be at least 21 candles.")
 
     prepared = add_indicators(data.copy())
     equity = initial_equity
@@ -220,7 +223,9 @@ def run_decision_backtest(
             and pending is None
             and i < len(prepared) - 1
         ):
-            history = prepared.iloc[: i + 1]
+            history = prepared.iloc[
+                max(0, i - decision_lookback + 1): i + 1
+            ]
             decision = DecisionEngine(
                 account_equity=equity,
                 risk_percent=risk_percent,
