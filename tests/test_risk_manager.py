@@ -1,8 +1,7 @@
 import pytest
 
-from risk_manager import create_trade_plan
-from strategy import Signal
-
+from trading_bot.core.enums import Signal
+from trading_bot.risk.risk_manager import create_trade_plan
 
 def test_long_trade_plan():
     plan = create_trade_plan(

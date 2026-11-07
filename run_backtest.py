@@ -1,6 +1,6 @@
-from backtest import run_backtest
-from indicators import add_indicators
-from market_data import get_ohlcv
+from trading_bot.analysis import add_indicators
+from trading_bot.backtesting import run_backtest
+from trading_bot.data import get_ohlcv
 
 
 SYMBOL = "ZEC/USD"
