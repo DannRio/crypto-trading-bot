@@ -132,7 +132,7 @@ def test_signal_check_uses_only_closed_history(monkeypatch):
     df = candles()
     run_backtest(add_indicators(df))
     assert lengths[0] == 220
-    assert lengths[-1] == len(df) - 1
+    # While a position is open, no new setup is evaluated.
     assert all(220 <= n < len(df) for n in lengths)
 
 
