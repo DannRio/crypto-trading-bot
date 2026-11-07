@@ -1,4 +1,8 @@
 from trading_bot.paper.broker import PaperBroker
+from trading_bot.paper.compare import (
+    PaperBacktestComparison,
+    compare_paper_to_backtest,
+)
 from trading_bot.paper.journal import PaperJournal
 from trading_bot.paper.models import (
     PaperAccountSnapshot,
@@ -16,6 +20,7 @@ from trading_bot.paper.risk import (
 
 __all__ = [
     "PaperAccountSnapshot",
+    "PaperBacktestComparison",
     "PaperBroker",
     "PaperJournal",
     "PaperOrder",
@@ -25,5 +30,6 @@ __all__ = [
     "PortfolioRiskConfig",
     "PortfolioRiskManager",
     "RiskCheck",
+    "compare_paper_to_backtest",
     "run_paper_replay",
 ]
