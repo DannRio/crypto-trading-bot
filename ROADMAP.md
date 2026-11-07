@@ -41,7 +41,7 @@
 - [x] Entry zone
 - [x] TP1 / TP2 and R-multiples
 - [x] Notional exposure cap
-- [ ] Portfolio-wide exposure limits
+- [x] Portfolio-wide open-risk and position limits
 - [ ] Daily loss controls
 
 ## Phase 6 — Research & Backtesting
@@ -67,11 +67,11 @@
 - [ ] Alerts
 
 ## Phase 8 — Paper Trading
-- [ ] Simulated broker
-- [ ] Position tracking
-- [ ] P&L
-- [ ] Trade journal
-- [ ] Performance comparison
+- [x] Simulated broker
+- [x] Position tracking
+- [x] Realized/unrealized P&L
+- [x] Persistent SQLite trade journal
+- [x] Paper-vs-backtest execution comparison
 
 ## Phase 9 — Assisted Trading
 - [ ] Approve/reject workflow
