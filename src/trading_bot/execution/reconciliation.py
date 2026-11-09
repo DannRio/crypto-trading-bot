@@ -1,6 +1,6 @@
 from trading_bot.execution.control import LiveExecutionGuard
 from trading_bot.execution.gateway import OrderGateway
-from trading_bot.execution.ids import is_bot_client_order_id
+from trading_bot.core.order_ids import is_bot_client_order_id
 from trading_bot.execution.manager import OrderManager
 from trading_bot.execution.models import (
     ManagedOrderStatus,
