@@ -269,3 +269,24 @@ The test suite covers exchange market identity, incomplete data
 detection, local history, multi-year chronological train/validation/test
 and walk-forward windows, stop gaps, and trade-risk accounting.
 Automated unit tests are not evidence of profitable strategies.
+
+
+### When exchange APIs do not provide old candles
+
+Import a **verified** archive CSV from a legitimate market-data provider
+instead of assuming pagination obtained the requested years:
+
+```powershell
+crypto-research import-csv --exchange kucoin --market-type spot --symbol BTC/USDT --timeframe 1h --file C:\\data\\btc_1h.csv --start 2023-01-01 --end 2026-01-01
+```
+
+Required CSV columns (case-insensitive): `timestamp,open,high,low,close,volume`.
+Timestamp may be an ISO-8601 datetime, Unix seconds or Unix milliseconds.
+The importer validates OHLC values, timestamp uniqueness, and full candle
+coverage, then writes into the same local `data/history/` store. Use
+`--allow-partial` only to intentionally accept a shorter/gapped archive.
+
+**Verify externally** that the file genuinely represents the chosen
+exchange and spot/swap/future instrument, uses trading-price candles,
+has unadjusted volumes and is not a mixture of venues. CSV imports
+cannot cryptographically prove provenance.
