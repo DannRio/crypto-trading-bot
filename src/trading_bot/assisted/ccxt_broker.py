@@ -13,7 +13,7 @@ from trading_bot.assisted.models import (
     PreparedOrder,
     TradeIntent,
 )
-from trading_bot.execution.ids import client_order_id_for_intent
+from trading_bot.core.order_ids import client_order_id_for_intent
 
 
 class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
