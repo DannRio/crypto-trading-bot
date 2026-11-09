@@ -212,6 +212,7 @@ def _status(args) -> int:
                     "timeframe",
                     "signal",
                     "status",
+                    "strategy",
                     "score",
                     "created_at",
                     "filled_at",
