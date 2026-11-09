@@ -28,8 +28,24 @@ class CCXTClient:
             }
         )
 
+    def supports(self, capability: str) -> bool:
+        return bool(self.exchange.has.get(capability))
+
+    def load_markets(self, reload: bool = False):
+        return self.exchange.load_markets(reload)
+
     def fetch_ticker(self, symbol: str):
         return self.exchange.fetch_ticker(symbol)
+
+    def fetch_tickers(
+        self,
+        symbols: list[str] | None = None,
+    ):
+        if not self.supports("fetchTickers"):
+            raise NotImplementedError(
+                f"{self.exchange_id} does not support fetchTickers."
+            )
+        return self.exchange.fetch_tickers(symbols)
 
     def fetch_ohlcv(
         self,
