@@ -509,7 +509,30 @@ class PaperTradingService:
             pending_before - len(self.broker.pending_orders)
         )
 
-        results = self._scanner().scan(scan_symbols)
+        results = self._scanner().scan(tracked_symbols)
+
+        result_by_symbol = {
+            result.symbol: result
+            for result in results
+        }
+        for order in list(self.broker.pending_orders):
+            result = result_by_symbol.get(order.symbol)
+            if result is None or result.error:
+                continue
+            still_valid = (
+                result.assessment is not None
+                and result.setup is not None
+                and result.assessment.status
+                == SetupStatus.CONFIRMED
+                and result.assessment.signal == order.signal
+                and result.assessment.strategy == order.strategy
+            )
+            if not still_valid:
+                self.broker.cancel_order(
+                    order.order_id,
+                    reason="SETUP_INVALIDATED",
+                )
+
         submitted = 0
         rejected = 0
         duplicates = 0
@@ -518,6 +541,8 @@ class PaperTradingService:
         for result in results:
             if result.error:
                 scan_errors += 1
+                continue
+            if result.symbol not in scan_symbols:
                 continue
             if (
                 result.assessment is None
