@@ -169,6 +169,7 @@ def paper_status(
 
         return {
             "journal": str(PAPER_JOURNAL_PATH),
+            "metadata": journal.metadata(),
             "summary": {
                 "pending_orders": len(pending),
                 "open_positions": len(filled),
