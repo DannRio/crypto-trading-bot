@@ -4,7 +4,7 @@ from typing import Callable
 
 import pandas as pd
 
-from trading_bot.core.enums import SetupStatus
+from trading_bot.core.enums import Signal, SetupStatus
 from trading_bot.data import get_ohlcv
 from trading_bot.paper.broker import PaperBroker
 from trading_bot.paper.journal import PaperJournal
@@ -294,6 +294,23 @@ class PaperTradingService:
 
             strategy = result.assessment.strategy
             signal = result.assessment.signal.value
+
+            if (
+                self.config.market_type == "spot"
+                and result.assessment.signal == Signal.SHORT
+            ):
+                self.journal.record_signal(
+                    result.symbol,
+                    self.config.timeframe,
+                    strategy,
+                    signal,
+                    signal_time,
+                    action="REJECTED",
+                    reason="Spot paper service is long-only.",
+                )
+                rejected += 1
+                continue
+
             if self.journal.signal_seen(
                 result.symbol,
                 self.config.timeframe,
@@ -376,13 +393,21 @@ class PaperTradingService:
         sleep_fn: Callable[[float], None] = time.sleep,
         on_cycle: Callable[[PaperServiceRunReport], None]
         | None = None,
+        on_error: Callable[[Exception], None] | None = None,
         max_cycles: int | None = None,
     ) -> None:
         cycles = 0
         while max_cycles is None or cycles < max_cycles:
-            report = self.run_once()
-            if on_cycle is not None:
-                on_cycle(report)
+            try:
+                report = self.run_once()
+            except Exception as exc:
+                if on_error is None:
+                    raise
+                on_error(exc)
+            else:
+                if on_cycle is not None:
+                    on_cycle(report)
+
             cycles += 1
             if (
                 max_cycles is not None
