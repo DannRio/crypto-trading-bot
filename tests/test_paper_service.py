@@ -539,3 +539,47 @@ def test_management_error_blocks_new_risk_for_cycle(tmp_path):
     assert report.submitted_orders == 0
     assert report.rejected_signals >= 1
     journal.close()
+
+
+
+def test_service_rejects_silent_risk_policy_change(tmp_path):
+    path = tmp_path / "continuous.db"
+    first = PaperJournal(path)
+    PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT",),
+            portfolio_risk=PortfolioRiskConfig(
+                max_daily_loss_percent=0.02,
+                require_correlation_data=False,
+            ),
+        ),
+        journal=first,
+        data_fetcher=CandleFeed(),
+        scanner_factory=FakeScanner,
+    )
+    first.close()
+
+    second = PaperJournal(path)
+    with pytest.raises(
+        ValueError,
+        match="risk_policy",
+    ):
+        PaperTradingService(
+            config=PaperServiceConfig(
+                exchange_id="fake",
+                market_type="spot",
+                timeframe="1h",
+                symbols=("BTC/USDT",),
+                portfolio_risk=PortfolioRiskConfig(
+                    max_daily_loss_percent=0.03,
+                    require_correlation_data=False,
+                ),
+            ),
+            journal=second,
+            data_fetcher=CandleFeed(),
+            scanner_factory=FakeScanner,
+        )
+    second.close()
