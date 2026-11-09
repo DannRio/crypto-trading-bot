@@ -237,10 +237,15 @@ class AssistedTradingService:
             ignored=ignored,
         )
 
-    def pending(self, limit: int = 100) -> list[TradeIntent]:
+    def pending(
+        self,
+        limit: int = 100,
+        now=None,
+    ) -> list[TradeIntent]:
         return self.store.list(
             statuses=(IntentStatus.PENDING_APPROVAL,),
             limit=limit,
+            expire_at=now,
         )
 
     def approve(
