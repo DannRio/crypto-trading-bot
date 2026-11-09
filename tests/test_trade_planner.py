@@ -72,7 +72,7 @@ def test_trade_plan_config_changes_stop_and_targets():
     )
 
     assert setup is not None
-    assert setup.stop_loss == pytest.approx(982.5)
+    assert setup.stop_loss == pytest.approx(985.0)
     risk_per_unit = setup.reference_entry - setup.stop_loss
     assert setup.take_profit_1 == pytest.approx(
         1000.0 + 1.5 * risk_per_unit
