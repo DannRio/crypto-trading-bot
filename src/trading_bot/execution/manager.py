@@ -42,6 +42,7 @@ class OrderManager:
             amount=order.amount,
             price=order.limit_price,
             client_order_id=order.client_order_id,
+            params=dict(order.params or {}),
         )
 
     def _apply_snapshot(
@@ -57,7 +58,8 @@ class OrderManager:
         now=None,
     ) -> ManagedOrder:
         if (
-            snapshot.client_order_id
+            snapshot.client_order_id is not None
+            and snapshot.client_order_id
             != order.client_order_id
         ):
             raise ValueError(
@@ -80,6 +82,7 @@ class OrderManager:
             ManagedOrderStatus.FILLED,
             ManagedOrderStatus.CANCELLED,
             ManagedOrderStatus.REJECTED,
+            ManagedOrderStatus.UNKNOWN,
         }:
             raise ValueError(
                 "Gateway returned an unsupported normalized order state: "
