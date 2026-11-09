@@ -20,6 +20,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated CCXT symbols.",
     )
     parser.add_argument("--timeframe", default="1h")
+    parser.add_argument(
+        "--confirm-timeframes",
+        default="",
+        help=(
+            "Comma-separated higher timeframes used as regime gates, "
+            "for example 1h,4h when the primary timeframe is 15m."
+        ),
+    )
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--equity", type=float, default=10_000)
     parser.add_argument(
@@ -57,10 +65,26 @@ def _print_result(result, show_no_trade: bool) -> None:
     )
     if result.structure:
         print(
-            f"Regime: {result.structure.regime.value} | "
+            f"Primary {result.timeframe}: "
+            f"{result.structure.regime.value} | "
             f"Volume: {result.structure.volume_ratio:.2f}x | "
             f"ATR: {result.structure.atr_pct * 100:.2f}%"
         )
+
+    if result.confirmations:
+        context = []
+        for item in result.confirmations:
+            regime = item.regime.value if item.regime else "UNAVAILABLE"
+            if item.aligned is True:
+                marker = "aligned"
+            elif item.aligned is False:
+                marker = "conflict"
+            else:
+                marker = "neutral"
+            context.append(
+                f"{item.timeframe}: {regime} ({marker})"
+            )
+        print("HTF context: " + " | ".join(context))
 
     if result.setup:
         setup = result.setup
@@ -92,20 +116,37 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--min-score must be between 0 and 100.")
 
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
-    scanner = MarketScanner(
-        exchange_id=args.exchange,
-        market_type=args.market_type,
-        timeframe=args.timeframe,
-        candle_limit=args.limit,
-        account_equity=args.equity,
-        risk_percent=args.risk_percent / 100,
-        min_confirmed_score=args.min_score,
+    confirmation_timeframes = tuple(
+        value.strip()
+        for value in args.confirm_timeframes.split(",")
+        if value.strip()
     )
+
+    try:
+        scanner = MarketScanner(
+            exchange_id=args.exchange,
+            market_type=args.market_type,
+            timeframe=args.timeframe,
+            confirmation_timeframes=confirmation_timeframes,
+            candle_limit=args.limit,
+            account_equity=args.equity,
+            risk_percent=args.risk_percent / 100,
+            min_confirmed_score=args.min_score,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
     results = scanner.scan(symbols)
 
+    context_label = (
+        ",".join(confirmation_timeframes)
+        if confirmation_timeframes
+        else "none"
+    )
     print(
         f"\n{args.exchange.upper()} | {args.market_type} | "
-        f"{args.timeframe} | scanned {len(results)} market(s)"
+        f"{args.timeframe} | HTF {context_label} | "
+        f"scanned {len(results)} market(s)"
     )
     visible = 0
     for result in results:

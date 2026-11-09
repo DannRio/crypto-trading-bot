@@ -11,6 +11,7 @@ A Python engine for scanning crypto markets, producing rule-qualified trade setu
 - Trend-continuation setup scoring: CONFIRMED, FORMING, or NO_TRADE.
 - Risk-defined trade plans with entry zone, stop, TP1, TP2, size, notional, and actual account risk.
 - Multi-symbol scanning and ranking.
+- Configurable higher-timeframe regime confirmation.
 - Shared DecisionEngine used by both scanner and historical research.
 - Scanner-aligned backtester with fees, slippage, drawdown, win rate, profit factor, and R-multiples.
 - Paginated multi-year historical downloader and local dataset store.
@@ -194,3 +195,24 @@ crypto-paper compare --exchange kucoin --market-type spot --symbol BTC/USDT --ti
 ~~~
 
 The paper broker models pending-entry expiry, fees, slippage, stop/TP2 exits, duplicate exposure protection, portfolio open-risk limits, position tracking, realized/unrealized P&L, and persistent orders/trades. Local paper state is stored under data/paper/ and is ignored by Git.
+
+
+## Multi-timeframe scanning
+
+The scanner can require one or more higher-timeframe regimes to agree with the primary setup direction. This is a qualification gate; it does not add points to the strategy score.
+
+Example: scan 15-minute setups only when both 1-hour and 4-hour trends agree:
+
+~~~powershell
+python main.py --exchange kucoin --market-type spot --symbols BTC/USDT,ETH/USDT,SOL/USDT --timeframe 15m --confirm-timeframes 1h,4h --show-no-trade
+~~~
+
+Behavior:
+
+- Primary LONG + all higher timeframes BULL_TREND -> primary status is preserved.
+- Primary SHORT + all higher timeframes BEAR_TREND -> primary status is preserved.
+- Any opposite higher-timeframe trend -> NO_TRADE and no trade plan.
+- RANGE, UNKNOWN, or unavailable higher-timeframe context -> a primary CONFIRMED setup is downgraded to FORMING.
+- The original rule score is preserved so the effect of the filter can be measured independently.
+
+The browser dashboard exposes the same higher-timeframe confirmation controls.

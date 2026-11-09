@@ -30,6 +30,7 @@ def test_reject_untrusted_market_inputs():
         "/api/scan?symbols=BTCUSDT",
         "/api/scan?symbols=BTC/USD,BTC/USD",
         "/api/scan?risk_percent=30",
+        "/api/scan?timeframe=1h&confirm_timeframes=15m",
         "/api/backtest?symbol=%2F%2F",
         "/api/backtest?limit=50",
     ):
@@ -72,6 +73,7 @@ def test_scanner_respects_market_parameters(monkeypatch):
             "market_type": "swap",
             "symbols": "BTC/USDT:USDT,ETH/USDT:USDT",
             "timeframe": "15m",
+            "confirm_timeframes": "1h,4h",
             "equity": 25000,
             "risk_percent": 1.5,
         },
@@ -83,6 +85,7 @@ def test_scanner_respects_market_parameters(monkeypatch):
     assert body["live_execution"] is False
     assert captured["risk_percent"] == 0.015
     assert captured["market_type"] == "swap"
+    assert captured["confirmation_timeframes"] == ("1h", "4h")
     assert captured["symbols"] == ["BTC/USDT:USDT", "ETH/USDT:USDT"]
 
 

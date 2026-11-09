@@ -25,7 +25,7 @@
 - [x] Support/resistance
 - [x] Basic market structure
 - [x] Trend/range regime detection
-- [ ] Multi-timeframe confirmation
+- [x] Higher-timeframe regime confirmation
 
 ## Phase 4 — Strategy Engine
 - [x] LONG / SHORT / NO_TRADE baseline
@@ -63,7 +63,7 @@
 - [x] Setup filtering and scoring
 - [x] Trade-plan generation
 - [x] Rank results
-- [ ] Multiple-timeframe scan
+- [x] Multiple-timeframe scan
 - [ ] Alerts
 
 ## Phase 8 — Paper Trading
