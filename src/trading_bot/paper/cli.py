@@ -84,7 +84,7 @@ def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--journal",
-        default="data/paper/paper_trading.db",
+        default="data/paper/continuous_paper.db",
     )
     parser.add_argument(
         "--once",
@@ -118,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     status = subparsers.add_parser("status")
     status.add_argument(
         "--journal",
-        default="data/paper/paper_trading.db",
+        default="data/paper/continuous_paper.db",
     )
     status.add_argument("--limit", type=int, default=20)
 
