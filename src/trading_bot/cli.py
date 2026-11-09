@@ -1,6 +1,14 @@
 import argparse
 import os
 
+from trading_bot.alerts import (
+    AlertDispatcher,
+    AlertLedger,
+    ConsoleAlertSink,
+    JsonlAlertSink,
+    WebhookAlertSink,
+    build_scan_alerts,
+)
 from trading_bot.core.enums import SetupStatus
 from trading_bot.scanner import (
     DynamicMarketUniverse,
@@ -64,6 +72,37 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Optional maximum ticker bid/ask spread in basis points.",
+    )
+    parser.add_argument(
+        "--alert-sinks",
+        default="",
+        help=(
+            "Comma-separated alert sinks: console,jsonl,webhook. "
+            "Empty disables alert delivery."
+        ),
+    )
+    parser.add_argument(
+        "--alert-forming",
+        action="store_true",
+        help="Also alert on FORMING setups.",
+    )
+    parser.add_argument(
+        "--alert-cooldown-minutes",
+        type=float,
+        default=60.0,
+        help="Suppress repeated identical alerts for this many minutes.",
+    )
+    parser.add_argument(
+        "--alert-ledger",
+        default="data/alerts/alerts.db",
+    )
+    parser.add_argument(
+        "--alert-jsonl",
+        default="data/alerts/events.jsonl",
+    )
+    parser.add_argument(
+        "--alert-webhook-url",
+        default=os.getenv("TRADING_ALERT_WEBHOOK_URL", ""),
     )
     return parser
 
@@ -133,6 +172,67 @@ def _print_result(result, show_no_trade: bool) -> None:
     print(f"Reason: {assessment.reason}")
     if result.data_quality and result.data_quality.warnings:
         print("Data warning: " + "; ".join(result.data_quality.warnings))
+
+
+
+
+def _dispatch_alerts(args, results) -> None:
+    names = [
+        value.strip().lower()
+        for value in args.alert_sinks.split(",")
+        if value.strip()
+    ]
+    if not names:
+        return
+
+    if args.alert_cooldown_minutes < 0:
+        raise SystemExit(
+            "--alert-cooldown-minutes cannot be negative."
+        )
+
+    allowed = {"console", "jsonl", "webhook"}
+    invalid = sorted(set(names).difference(allowed))
+    if invalid:
+        raise SystemExit(
+            "Unsupported alert sink(s): " + ", ".join(invalid)
+        )
+
+    sinks = []
+    if "console" in names:
+        sinks.append(ConsoleAlertSink())
+    if "jsonl" in names:
+        sinks.append(JsonlAlertSink(args.alert_jsonl))
+    if "webhook" in names:
+        if not args.alert_webhook_url:
+            raise SystemExit(
+                "Webhook alerts require --alert-webhook-url "
+                "or TRADING_ALERT_WEBHOOK_URL."
+            )
+        sinks.append(
+            WebhookAlertSink(args.alert_webhook_url)
+        )
+
+    ledger = AlertLedger(args.alert_ledger)
+    try:
+        dispatcher = AlertDispatcher(
+            sinks=sinks,
+            ledger=ledger,
+            cooldown_seconds=int(
+                args.alert_cooldown_minutes * 60
+            ),
+        )
+        events = build_scan_alerts(
+            results,
+            include_forming=args.alert_forming,
+            include_errors=True,
+        )
+        sent, suppressed = dispatcher.dispatch(events)
+        print(
+            f"Alerts: sent {sent}, suppressed {suppressed} "
+            f"by cooldown."
+        )
+    finally:
+        ledger.close()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -233,6 +333,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if visible == 0:
         print("\nNo confirmed or forming setups found.")
+
+    _dispatch_alerts(args, results)
     return 0
 
 
