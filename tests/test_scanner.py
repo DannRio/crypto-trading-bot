@@ -63,3 +63,24 @@ def test_cli_parser_accepts_auto_universe_options():
     assert args.max_markets == 12
     assert args.min_quote_volume == 5_000_000
     assert args.max_spread_bps == 25
+
+
+
+def test_cli_parser_accepts_alert_options():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--alert-sinks",
+            "console,jsonl",
+            "--alert-forming",
+            "--alert-cooldown-minutes",
+            "30",
+            "--alert-jsonl",
+            "data/alerts/test.jsonl",
+        ]
+    )
+
+    assert args.alert_sinks == "console,jsonl"
+    assert args.alert_forming is True
+    assert args.alert_cooldown_minutes == 30
+    assert args.alert_jsonl == "data/alerts/test.jsonl"
