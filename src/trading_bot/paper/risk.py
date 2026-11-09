@@ -62,6 +62,8 @@ class RiskCheck:
 @dataclass(frozen=True)
 class PortfolioRiskState:
     peak_equity: float
+    last_equity: float
+    evaluated_at: pd.Timestamp
     day_key: str
     day_start_equity: float
     week_key: str
@@ -133,6 +135,8 @@ class PortfolioRiskManager:
         now = _utc_timestamp(timestamp)
         return PortfolioRiskState(
             peak_equity=account_equity,
+            last_equity=account_equity,
+            evaluated_at=now,
             day_key=_day_key(now),
             day_start_equity=account_equity,
             week_key=_week_key(now),
@@ -232,6 +236,8 @@ class PortfolioRiskManager:
 
         updated = PortfolioRiskState(
             peak_equity=peak,
+            last_equity=account_equity,
+            evaluated_at=now,
             day_key=day_key,
             day_start_equity=day_start,
             week_key=week_key,
