@@ -103,8 +103,54 @@ class PaperTradingService:
             journal=journal,
         )
 
+        self._ensure_service_metadata()
         if restore_state:
             self.broker.restore_from_journal()
+
+    @staticmethod
+    def _canonical_metadata_value(value) -> str:
+        if isinstance(value, float):
+            return format(value, ".17g")
+        return str(value)
+
+    def _ensure_service_metadata(self) -> None:
+        expected = {
+            "exchange_id": self.config.exchange_id,
+            "market_type": self.config.market_type,
+            "timeframe": self.config.timeframe,
+            "starting_equity": self.config.starting_equity,
+            "fee_rate": self.config.fee_rate,
+            "slippage_bps": self.config.slippage_bps,
+        }
+        persisted = self.journal.metadata()
+
+        if not persisted:
+            for key, value in expected.items():
+                self.journal.set_metadata(
+                    key,
+                    self._canonical_metadata_value(value),
+                )
+            return
+
+        mismatches = []
+        for key, value in expected.items():
+            expected_value = self._canonical_metadata_value(
+                value
+            )
+            actual = persisted.get(key)
+            if actual != expected_value:
+                mismatches.append(
+                    f"{key}: journal={actual!r}, "
+                    f"requested={expected_value!r}"
+                )
+
+        if mismatches:
+            raise ValueError(
+                "Paper service configuration does not match "
+                "the persisted journal: "
+                + "; ".join(mismatches)
+                + ". Use the original settings or a new journal."
+            )
 
     def _resolve_symbols(self) -> list[str]:
         if not self.config.auto_universe:
