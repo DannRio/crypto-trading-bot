@@ -392,3 +392,47 @@ def test_run_forever_can_continue_after_cycle_error(tmp_path):
     assert isinstance(errors[0], RuntimeError)
     assert len(reports) == 1
     journal.close()
+
+
+
+def test_service_rejects_restart_with_different_account_invariants(
+    tmp_path,
+):
+    path = tmp_path / "continuous.db"
+    first = PaperJournal(path)
+    PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT",),
+            starting_equity=10_000,
+            fee_rate=0.001,
+            slippage_bps=5.0,
+        ),
+        journal=first,
+        data_fetcher=CandleFeed(),
+        scanner_factory=FakeScanner,
+    )
+    first.close()
+
+    second = PaperJournal(path)
+    with pytest.raises(
+        ValueError,
+        match="does not match the persisted journal",
+    ):
+        PaperTradingService(
+            config=PaperServiceConfig(
+                exchange_id="fake",
+                market_type="spot",
+                timeframe="15m",
+                symbols=("BTC/USDT",),
+                starting_equity=20_000,
+                fee_rate=0.001,
+                slippage_bps=5.0,
+            ),
+            journal=second,
+            data_fetcher=CandleFeed(),
+            scanner_factory=FakeScanner,
+        )
+    second.close()
