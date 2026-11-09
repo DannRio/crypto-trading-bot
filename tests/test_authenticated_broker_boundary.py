@@ -226,6 +226,7 @@ class ContractFakeExchange(FakeExchange):
         market = markets["BTC/USDT"]
         market["contract"] = True
         market["contractSize"] = 0.01
+        market["limits"]["amount"]["max"] = 1000.0
         return markets
 
 
