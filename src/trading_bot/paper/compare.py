@@ -5,6 +5,7 @@ import pandas as pd
 from trading_bot.backtesting import run_decision_backtest
 from trading_bot.paper.broker import PaperBroker
 from trading_bot.paper.replay import run_paper_replay
+from trading_bot.strategies import DEFAULT_STRATEGIES
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ def compare_paper_to_backtest(
     fee_rate: float = 0.001,
     slippage_bps: float = 5.0,
     allow_short: bool = True,
+    strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES,
 ) -> PaperBacktestComparison:
     backtest = run_decision_backtest(
         data=data,
@@ -39,6 +41,7 @@ def compare_paper_to_backtest(
         fee_rate=fee_rate,
         slippage_bps=slippage_bps,
         allow_short=allow_short,
+        strategy_names=strategy_names,
     )
 
     broker = PaperBroker(
@@ -54,6 +57,7 @@ def compare_paper_to_backtest(
         risk_percent=risk_percent,
         min_confirmed_score=min_confirmed_score,
         allow_short=allow_short,
+        strategy_names=strategy_names,
     )
 
     snapshot = broker.snapshot()
