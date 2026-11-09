@@ -38,6 +38,16 @@ class PaperOrder:
     closed_at: pd.Timestamp | None = None
     exit_price: float | None = None
     exit_reason: str | None = None
+    entry_low: float = 0.0
+    entry_high: float = 0.0
+    take_profit_1_fraction: float = 0.5
+    move_stop_to_break_even_after_tp1: bool = True
+    tp1_hit: bool = False
+    remaining_size: float | None = None
+    realized_gross_pnl: float = 0.0
+    realized_exit_fees: float = 0.0
+    realized_exit_value: float = 0.0
+    effective_stop: float | None = None
 
 
 @dataclass
@@ -57,6 +67,15 @@ class PaperPosition:
     score: int
     regime: str
     strategy: str
+    initial_position_size: float = 0.0
+    initial_risk_amount: float = 0.0
+    tp1_hit: bool = False
+    take_profit_1_fraction: float = 0.5
+    move_stop_to_break_even_after_tp1: bool = True
+    effective_stop: float | None = None
+    realized_gross_pnl: float = 0.0
+    realized_exit_fees: float = 0.0
+    realized_exit_value: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -79,6 +98,7 @@ class PaperTrade:
     score: int
     regime: str
     strategy: str
+    tp1_hit: bool = False
 
 
 @dataclass(frozen=True)
