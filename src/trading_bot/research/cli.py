@@ -30,6 +30,14 @@ def _add_backtest_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--min-score", type=int, default=70)
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--slippage-bps", type=float, default=5.0)
+    parser.add_argument(
+        "--strategies",
+        default="trend_continuation",
+        help=(
+            "Comma-separated strategies: trend_continuation, "
+            "breakout_retest, range_mean_reversion."
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,6 +104,7 @@ def _backtest_kwargs(args) -> dict:
         "fee_rate": args.fee_rate,
         "slippage_bps": args.slippage_bps,
         "allow_short": args.market_type != "spot",
+        "strategy_names": tuple(_csv_values(args.strategies)),
     }
 
 
@@ -163,6 +172,7 @@ def _backtest(args) -> int:
         "win_rate_pct",
         "profit_factor",
         "average_r",
+        "strategies",
         "status",
     ]
     available = [
