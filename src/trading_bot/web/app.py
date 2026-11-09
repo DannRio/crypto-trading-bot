@@ -213,7 +213,11 @@ def scan(
             "signal": result.assessment.signal.value if result.assessment else "NO_TRADE",
             "score": result.score,
             "strategy": (
-                result.assessment.strategy
+                getattr(
+                    result.assessment,
+                    "strategy",
+                    "trend_continuation",
+                )
                 if result.assessment
                 else None
             ),
