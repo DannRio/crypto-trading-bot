@@ -289,11 +289,13 @@ def main(argv=None) -> int:
             return 0
 
         if args.command == "trip":
+            # Latch locally before any credential/network operation. If the
+            # exchange is unreachable, new submissions are still stopped.
+            guard.trip(
+                actor=args.actor,
+                reason=args.reason,
+            )
             if args.no_cancel:
-                guard.trip(
-                    actor=args.actor,
-                    reason=args.reason,
-                )
                 print(
                     _json(
                         {
