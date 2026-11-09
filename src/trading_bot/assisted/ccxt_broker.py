@@ -31,6 +31,7 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
         credential_provider: EnvironmentCredentialProvider | None = None,
         exchange_factory: Callable[[dict], object] | None = None,
         require_attached_protection: bool = False,
+        require_client_order_id: bool = False,
     ):
         self.exchange_id = exchange_id
         self.market_type = market_type
@@ -47,6 +48,9 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
         self._markets: dict | None = None
         self.require_attached_protection = (
             require_attached_protection
+        )
+        self.require_client_order_id = (
+            require_client_order_id
         )
 
         self._capabilities = BrokerCapabilities(
@@ -282,6 +286,19 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
         if requested_amount <= 0 or requested_price <= 0:
             raise ValueError(
                 "Intent amount and price must be positive."
+            )
+
+        if (
+            self.require_client_order_id
+            and not self._feature_value(
+                intent.symbol,
+                "clientOrderId",
+            )
+        ):
+            raise RuntimeError(
+                "Exchange does not advertise clientOrderId support "
+                f"for {intent.symbol}; live idempotent submission "
+                "is disabled for this market."
             )
 
         amount = float(
