@@ -21,6 +21,7 @@ class CompletedTrade:
     regime: str = ""
     risk_amount: float = 0.0
     r_multiple: float = 0.0
+    tp1_hit: bool = False
 
 
 @dataclass

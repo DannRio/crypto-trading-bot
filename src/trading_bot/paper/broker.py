@@ -57,6 +57,31 @@ def _gross_pnl(
     return (entry_price - exit_price) * position_size
 
 
+def _entry_price_from_zone(
+    order: PaperOrder,
+    candle,
+) -> float | None:
+    zone_low = (
+        order.entry_low
+        if order.entry_low > 0
+        else order.reference_entry
+    )
+    zone_high = (
+        order.entry_high
+        if order.entry_high > 0
+        else order.reference_entry
+    )
+    low = float(candle["low"])
+    high = float(candle["high"])
+    if high < zone_low or low > zone_high:
+        return None
+
+    open_price = float(
+        candle.get("open", candle["close"])
+    )
+    return min(max(open_price, zone_low), zone_high)
+
+
 class PaperBroker:
     def __init__(
         self,
@@ -267,6 +292,16 @@ class PaperBroker:
                 signal=Signal(str(row.signal)),
                 created_at=_timestamp(row.created_at),
                 reference_entry=float(row.reference_entry),
+                entry_low=(
+                    float(row.entry_low)
+                    if float(row.entry_low) > 0
+                    else float(row.reference_entry)
+                ),
+                entry_high=(
+                    float(row.entry_high)
+                    if float(row.entry_high) > 0
+                    else float(row.reference_entry)
+                ),
                 stop_loss=float(row.stop_loss),
                 take_profit_1=float(row.take_profit_1),
                 take_profit_2=float(row.take_profit_2),
@@ -295,6 +330,32 @@ class PaperBroker:
                     if pd.notna(row.exit_reason)
                     else None
                 ),
+                take_profit_1_fraction=float(
+                    row.take_profit_1_fraction
+                ),
+                move_stop_to_break_even_after_tp1=bool(
+                    row.move_stop_to_break_even_after_tp1
+                ),
+                tp1_hit=bool(row.tp1_hit),
+                remaining_size=(
+                    float(row.remaining_size)
+                    if pd.notna(row.remaining_size)
+                    else None
+                ),
+                realized_gross_pnl=float(
+                    row.realized_gross_pnl
+                ),
+                realized_exit_fees=float(
+                    row.realized_exit_fees
+                ),
+                realized_exit_value=float(
+                    row.realized_exit_value
+                ),
+                effective_stop=(
+                    float(row.effective_stop)
+                    if pd.notna(row.effective_stop)
+                    else None
+                ),
             )
             self.orders[order.order_id] = order
 
@@ -304,9 +365,23 @@ class PaperBroker:
                         "Persisted FILLED order is missing fill data: "
                         f"{order.order_id}"
                     )
-                risk_amount = (
+                initial_risk_amount = (
                     abs(order.fill_price - order.stop_loss)
                     * order.position_size
+                )
+                remaining_size = (
+                    order.remaining_size
+                    if order.remaining_size is not None
+                    else order.position_size
+                )
+                effective_stop = (
+                    order.effective_stop
+                    if order.effective_stop is not None
+                    else order.stop_loss
+                )
+                current_risk = (
+                    abs(order.fill_price - effective_stop)
+                    * remaining_size
                 )
                 self.positions[
                     (order.symbol, order.timeframe)
@@ -320,15 +395,35 @@ class PaperBroker:
                     stop_loss=order.stop_loss,
                     take_profit_1=order.take_profit_1,
                     take_profit_2=order.take_profit_2,
-                    position_size=order.position_size,
-                    risk_amount=risk_amount,
+                    position_size=remaining_size,
+                    risk_amount=current_risk,
                     entry_fee=order.entry_fee,
                     score=order.score,
                     regime=order.regime,
                     strategy=order.strategy,
+                    initial_position_size=order.position_size,
+                    initial_risk_amount=initial_risk_amount,
+                    tp1_hit=order.tp1_hit,
+                    take_profit_1_fraction=(
+                        order.take_profit_1_fraction
+                    ),
+                    move_stop_to_break_even_after_tp1=(
+                        order.move_stop_to_break_even_after_tp1
+                    ),
+                    effective_stop=effective_stop,
+                    realized_gross_pnl=order.realized_gross_pnl,
+                    realized_exit_fees=order.realized_exit_fees,
+                    realized_exit_value=order.realized_exit_value,
                 )
-                self.realized_net_pnl -= order.entry_fee
-                self.fees_paid += order.entry_fee
+                self.realized_net_pnl += (
+                    order.realized_gross_pnl
+                    - order.realized_exit_fees
+                    - order.entry_fee
+                )
+                self.fees_paid += (
+                    order.entry_fee
+                    + order.realized_exit_fees
+                )
 
         return {
             "active_orders": len(active),
@@ -378,6 +473,8 @@ class PaperBroker:
             signal=setup.signal,
             created_at=_timestamp(created_at),
             reference_entry=setup.reference_entry,
+            entry_low=setup.entry_low,
+            entry_high=setup.entry_high,
             stop_loss=setup.stop_loss,
             take_profit_1=setup.take_profit_1,
             take_profit_2=setup.take_profit_2,
@@ -387,6 +484,12 @@ class PaperBroker:
             regime=regime,
             strategy=strategy,
             bars_remaining=expires_after_bars,
+            take_profit_1_fraction=(
+                setup.take_profit_1_fraction
+            ),
+            move_stop_to_break_even_after_tp1=(
+                setup.move_stop_to_break_even_after_tp1
+            ),
         )
         self.orders[order.order_id] = order
         if self.journal:
@@ -417,9 +520,10 @@ class PaperBroker:
         self,
         order: PaperOrder,
         timestamp: pd.Timestamp,
+        raw_entry_price: float,
     ) -> PaperPosition:
         fill_price = _entry_with_slippage(
-            order.reference_entry,
+            raw_entry_price,
             order.signal,
             self.slippage_bps,
         )
@@ -428,7 +532,7 @@ class PaperBroker:
             * order.position_size
             * self.fee_rate
         )
-        actual_risk = (
+        initial_risk = (
             abs(fill_price - order.stop_loss)
             * order.position_size
         )
@@ -440,6 +544,8 @@ class PaperBroker:
         order.filled_at = timestamp
         order.fill_price = fill_price
         order.entry_fee = entry_fee
+        order.remaining_size = order.position_size
+        order.effective_stop = order.stop_loss
 
         position = PaperPosition(
             order_id=order.order_id,
@@ -452,17 +558,105 @@ class PaperBroker:
             take_profit_1=order.take_profit_1,
             take_profit_2=order.take_profit_2,
             position_size=order.position_size,
-            risk_amount=actual_risk,
+            risk_amount=initial_risk,
             entry_fee=entry_fee,
             score=order.score,
             regime=order.regime,
             strategy=order.strategy,
+            initial_position_size=order.position_size,
+            initial_risk_amount=initial_risk,
+            tp1_hit=False,
+            take_profit_1_fraction=(
+                order.take_profit_1_fraction
+            ),
+            move_stop_to_break_even_after_tp1=(
+                order.move_stop_to_break_even_after_tp1
+            ),
+            effective_stop=order.stop_loss,
         )
         self.positions[(order.symbol, order.timeframe)] = position
 
         if self.journal:
             self.journal.save_order(order)
         return position
+
+    def _take_tp1(
+        self,
+        key: tuple[str, str],
+    ) -> None:
+        position = self.positions[key]
+        if (
+            position.tp1_hit
+            or position.take_profit_1_fraction <= 0
+        ):
+            return
+
+        exit_size = min(
+            position.initial_position_size
+            * position.take_profit_1_fraction,
+            position.position_size,
+        )
+        if exit_size <= 0:
+            return
+
+        exit_price = _exit_with_slippage(
+            position.take_profit_1,
+            position.signal,
+            self.slippage_bps,
+        )
+        gross_pnl = _gross_pnl(
+            position.signal,
+            position.entry_price,
+            exit_price,
+            exit_size,
+        )
+        exit_fee = (
+            exit_price
+            * exit_size
+            * self.fee_rate
+        )
+
+        self.realized_net_pnl += gross_pnl - exit_fee
+        self.fees_paid += exit_fee
+
+        position.position_size -= exit_size
+        position.realized_gross_pnl += gross_pnl
+        position.realized_exit_fees += exit_fee
+        position.realized_exit_value += (
+            exit_price * exit_size
+        )
+        position.tp1_hit = True
+
+        if position.move_stop_to_break_even_after_tp1:
+            position.effective_stop = position.entry_price
+
+        position.risk_amount = (
+            abs(
+                position.entry_price
+                - (
+                    position.effective_stop
+                    if position.effective_stop is not None
+                    else position.stop_loss
+                )
+            )
+            * position.position_size
+        )
+
+        order = self.orders[position.order_id]
+        order.tp1_hit = True
+        order.remaining_size = position.position_size
+        order.realized_gross_pnl = (
+            position.realized_gross_pnl
+        )
+        order.realized_exit_fees = (
+            position.realized_exit_fees
+        )
+        order.realized_exit_value = (
+            position.realized_exit_value
+        )
+        order.effective_stop = position.effective_stop
+        if self.journal:
+            self.journal.save_order(order)
 
     def _close_position(
         self,
@@ -477,26 +671,57 @@ class PaperBroker:
             position.signal,
             self.slippage_bps,
         )
-        gross_pnl = _gross_pnl(
+        remaining_size = position.position_size
+        final_gross_pnl = _gross_pnl(
             position.signal,
             position.entry_price,
             exit_price,
-            position.position_size,
+            remaining_size,
         )
         exit_fee = (
             exit_price
-            * position.position_size
+            * remaining_size
             * self.fee_rate
         )
 
-        self.realized_net_pnl += gross_pnl - exit_fee
+        self.realized_net_pnl += (
+            final_gross_pnl - exit_fee
+        )
         self.fees_paid += exit_fee
 
-        total_fees = position.entry_fee + exit_fee
-        net_pnl = gross_pnl - total_fees
+        total_gross_pnl = (
+            position.realized_gross_pnl
+            + final_gross_pnl
+        )
+        total_fees = (
+            position.entry_fee
+            + position.realized_exit_fees
+            + exit_fee
+        )
+        net_pnl = total_gross_pnl - total_fees
+
+        initial_size = (
+            position.initial_position_size
+            if position.initial_position_size > 0
+            else remaining_size
+        )
+        weighted_exit_value = (
+            position.realized_exit_value
+            + exit_price * remaining_size
+        )
+        average_exit = (
+            weighted_exit_value / initial_size
+            if initial_size > 0
+            else exit_price
+        )
+        initial_risk = (
+            position.initial_risk_amount
+            if position.initial_risk_amount > 0
+            else position.risk_amount
+        )
         r_multiple = (
-            net_pnl / position.risk_amount
-            if position.risk_amount > 0
+            net_pnl / initial_risk
+            if initial_risk > 0
             else 0.0
         )
 
@@ -508,24 +733,37 @@ class PaperBroker:
             entry_time=position.entry_time,
             exit_time=timestamp,
             entry_price=position.entry_price,
-            exit_price=exit_price,
-            position_size=position.position_size,
-            gross_pnl=gross_pnl,
+            exit_price=average_exit,
+            position_size=initial_size,
+            gross_pnl=total_gross_pnl,
             fees=total_fees,
             net_pnl=net_pnl,
-            risk_amount=position.risk_amount,
+            risk_amount=initial_risk,
             r_multiple=r_multiple,
             exit_reason=reason,
             score=position.score,
             regime=position.regime,
             strategy=position.strategy,
+            tp1_hit=position.tp1_hit,
         )
 
         order = self.orders[position.order_id]
         order.status = PaperOrderStatus.CLOSED
         order.closed_at = timestamp
-        order.exit_price = exit_price
+        order.exit_price = average_exit
         order.exit_reason = reason
+        order.tp1_hit = position.tp1_hit
+        order.remaining_size = 0.0
+        order.realized_gross_pnl = (
+            position.realized_gross_pnl
+        )
+        order.realized_exit_fees = (
+            position.realized_exit_fees
+        )
+        order.realized_exit_value = (
+            position.realized_exit_value
+        )
+        order.effective_stop = position.effective_stop
 
         del self.positions[key]
         self.completed_trades.append(trade)
@@ -556,13 +794,16 @@ class PaperBroker:
             ):
                 continue
 
-            touched = (
-                low
-                <= order.reference_entry
-                <= high
+            raw_entry = _entry_price_from_zone(
+                order,
+                candle,
             )
-            if touched:
-                self._fill_order(order, timestamp)
+            if raw_entry is not None:
+                self._fill_order(
+                    order,
+                    timestamp,
+                    raw_entry,
+                )
             else:
                 order.bars_remaining -= 1
                 if order.bars_remaining <= 0:
@@ -576,29 +817,86 @@ class PaperBroker:
         if position is None:
             return closed
 
+        effective_stop = (
+            position.effective_stop
+            if position.effective_stop is not None
+            else position.stop_loss
+        )
+
         if position.signal == Signal.LONG:
-            hit_stop = low <= position.stop_loss
-            hit_target = high >= position.take_profit_2
+            hit_stop = low <= effective_stop
+            hit_tp1 = (
+                not position.tp1_hit
+                and position.take_profit_1_fraction > 0
+                and high >= position.take_profit_1
+            )
+            hit_tp2 = high >= position.take_profit_2
         else:
-            hit_stop = high >= position.stop_loss
-            hit_target = low <= position.take_profit_2
+            hit_stop = high >= effective_stop
+            hit_tp1 = (
+                not position.tp1_hit
+                and position.take_profit_1_fraction > 0
+                and low <= position.take_profit_1
+            )
+            hit_tp2 = low <= position.take_profit_2
 
         if hit_stop:
             closed.append(
                 self._close_position(
                     key,
-                    position.stop_loss,
+                    effective_stop,
                     timestamp,
-                    "STOP_LOSS",
+                    (
+                        "STOP_LOSS_AFTER_TP1"
+                        if position.tp1_hit
+                        else "STOP_LOSS"
+                    ),
                 )
             )
-        elif hit_target:
+            return closed
+
+        if hit_tp1:
+            self._take_tp1(key)
+            position = self.positions.get(key)
+            if position is None:
+                return closed
+
+        effective_stop = (
+            position.effective_stop
+            if position.effective_stop is not None
+            else position.stop_loss
+        )
+        if position.signal == Signal.LONG:
+            stop_after_tp1 = (
+                position.tp1_hit
+                and low <= effective_stop
+            )
+        else:
+            stop_after_tp1 = (
+                position.tp1_hit
+                and high >= effective_stop
+            )
+
+        if stop_after_tp1:
+            closed.append(
+                self._close_position(
+                    key,
+                    effective_stop,
+                    timestamp,
+                    "STOP_LOSS_AFTER_TP1",
+                )
+            )
+        elif hit_tp2:
             closed.append(
                 self._close_position(
                     key,
                     position.take_profit_2,
                     timestamp,
-                    "TAKE_PROFIT_2",
+                    (
+                        "TAKE_PROFIT_2_AFTER_TP1"
+                        if position.tp1_hit
+                        else "TAKE_PROFIT_2"
+                    ),
                 )
             )
 

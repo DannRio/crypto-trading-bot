@@ -9,7 +9,11 @@ from trading_bot.paper import (
 from trading_bot.planning import TradeSetup
 
 
-def long_setup(risk=10.0) -> TradeSetup:
+def long_setup(
+    risk=10.0,
+    tp1_fraction=0.5,
+    move_stop_to_break_even=True,
+) -> TradeSetup:
     return TradeSetup(
         signal=Signal.LONG,
         status=SetupStatus.CONFIRMED,
@@ -27,13 +31,17 @@ def long_setup(risk=10.0) -> TradeSetup:
         target_risk_amount=risk,
         actual_risk_amount=risk,
         reasons=("test",),
+        take_profit_1_fraction=tp1_fraction,
+        move_stop_to_break_even_after_tp1=(
+            move_stop_to_break_even
+        ),
     )
 
 
-def candle(timestamp, high, low, close):
+def candle(timestamp, high, low, close, open_=None):
     return {
         "timestamp": pd.Timestamp(timestamp, tz="UTC"),
-        "open": close,
+        "open": close if open_ is None else open_,
         "high": high,
         "low": low,
         "close": close,
@@ -41,7 +49,7 @@ def candle(timestamp, high, low, close):
     }
 
 
-def test_paper_order_fills_and_hits_tp2():
+def test_paper_order_fills_and_executes_tp1_then_tp2():
     broker = PaperBroker(
         starting_equity=10_000,
         fee_rate=0.0,
@@ -73,15 +81,100 @@ def test_paper_order_fills_and_hits_tp2():
         candle(
             "2026-01-01 02:00:00",
             high=111.0,
-            low=100.0,
+            low=101.0,
             close=110.0,
         ),
     )
 
     assert len(trades) == 1
-    assert trades[0].exit_reason == "TAKE_PROFIT_2"
-    assert trades[0].net_pnl == pytest.approx(20.0)
-    assert broker.snapshot().equity == pytest.approx(10_020.0)
+    assert trades[0].exit_reason == "TAKE_PROFIT_2_AFTER_TP1"
+    assert trades[0].tp1_hit is True
+    assert trades[0].net_pnl == pytest.approx(15.0)
+    assert broker.snapshot().equity == pytest.approx(10_015.0)
+
+
+def test_entry_zone_fills_without_exact_reference_touch():
+    broker = PaperBroker(
+        starting_equity=10_000,
+        fee_rate=0.0,
+        slippage_bps=0.0,
+    )
+    broker.submit_setup(
+        "BTC/USDT",
+        "1h",
+        long_setup(),
+        "2026-01-01 00:00:00+00:00",
+    )
+
+    broker.process_candle(
+        "BTC/USDT",
+        "1h",
+        candle(
+            "2026-01-01 01:00:00",
+            high=99.8,
+            low=99.2,
+            close=99.5,
+            open_=99.5,
+        ),
+    )
+
+    position = broker.positions[("BTC/USDT", "1h")]
+    assert position.entry_price == pytest.approx(99.5)
+
+
+def test_tp1_partial_exit_moves_remaining_stop_to_break_even():
+    broker = PaperBroker(
+        starting_equity=10_000,
+        fee_rate=0.0,
+        slippage_bps=0.0,
+    )
+    broker.submit_setup(
+        "BTC/USDT",
+        "1h",
+        long_setup(),
+        "2026-01-01 00:00:00+00:00",
+    )
+    broker.process_candle(
+        "BTC/USDT",
+        "1h",
+        candle(
+            "2026-01-01 01:00:00",
+            high=101.0,
+            low=99.0,
+            close=100.0,
+        ),
+    )
+
+    first = broker.process_candle(
+        "BTC/USDT",
+        "1h",
+        candle(
+            "2026-01-01 02:00:00",
+            high=106.0,
+            low=101.0,
+            close=105.0,
+        ),
+    )
+    assert first == []
+    position = broker.positions[("BTC/USDT", "1h")]
+    assert position.tp1_hit is True
+    assert position.position_size == pytest.approx(1.0)
+    assert position.effective_stop == pytest.approx(100.0)
+    assert position.risk_amount == pytest.approx(0.0)
+
+    trades = broker.process_candle(
+        "BTC/USDT",
+        "1h",
+        candle(
+            "2026-01-01 03:00:00",
+            high=104.0,
+            low=99.0,
+            close=100.0,
+        ),
+    )
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "STOP_LOSS_AFTER_TP1"
+    assert trades[0].net_pnl == pytest.approx(5.0)
 
 
 def test_duplicate_exposure_is_rejected():

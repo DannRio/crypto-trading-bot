@@ -78,8 +78,10 @@ def test_journal_persists_closed_trade(tmp_path):
     assert orders.iloc[0]["status"] == "CLOSED"
     assert orders.iloc[0]["strategy"] == "trend_continuation"
     assert len(trades) == 1
-    assert trades.iloc[0]["net_pnl"] == 20.0
+    assert trades.iloc[0]["net_pnl"] == 5.0
     assert trades.iloc[0]["strategy"] == "trend_continuation"
+    assert bool(trades.iloc[0]["tp1_hit"]) is True
+    assert trades.iloc[0]["exit_reason"] == "STOP_LOSS_AFTER_TP1"
 
     journal.close()
 
@@ -155,5 +157,9 @@ def test_journal_migrates_legacy_tables_with_strategy_column(tmp_path):
     }
 
     assert "strategy" in order_columns
+    assert "entry_low" in order_columns
+    assert "entry_high" in order_columns
+    assert "tp1_hit" in order_columns
     assert "strategy" in trade_columns
+    assert "tp1_hit" in trade_columns
     journal.close()

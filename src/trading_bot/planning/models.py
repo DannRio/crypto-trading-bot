@@ -12,6 +12,8 @@ class TradePlanConfig:
     max_notional_percent: float = 1.0
     reward_to_risk_1: float = 1.0
     reward_to_risk_2: float = 2.0
+    take_profit_1_fraction: float = 0.5
+    move_stop_to_break_even_after_tp1: bool = True
 
     def __post_init__(self):
         positive = {
@@ -37,6 +39,10 @@ class TradePlanConfig:
             raise ValueError(
                 "reward_to_risk_2 must be >= reward_to_risk_1."
             )
+        if not 0 <= self.take_profit_1_fraction < 1:
+            raise ValueError(
+                "take_profit_1_fraction must be >= 0 and < 1."
+            )
 
 
 @dataclass(frozen=True)
@@ -57,3 +63,5 @@ class TradeSetup:
     target_risk_amount: float
     actual_risk_amount: float
     reasons: tuple[str, ...]
+    take_profit_1_fraction: float = 0.5
+    move_stop_to_break_even_after_tp1: bool = True

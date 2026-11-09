@@ -219,12 +219,13 @@ def test_service_processes_each_closed_candle_once(tmp_path):
     second = service.run_once()
     assert second.new_candles == 1
     assert second.rejected_signals == 1
-    assert service.broker.pending_orders[0].bars_remaining == 2
+    assert len(service.broker.pending_orders) == 0
+    assert service.broker.snapshot().open_positions == 1
 
     third = service.run_once()
     assert third.new_candles == 0
     assert third.duplicate_signals == 1
-    assert service.broker.pending_orders[0].bars_remaining == 2
+    assert service.broker.snapshot().open_positions == 1
 
     journal.close()
 

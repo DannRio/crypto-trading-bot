@@ -97,4 +97,8 @@ def create_trade_setup(
         target_risk_amount=sizing.target_risk_amount,
         actual_risk_amount=sizing.actual_risk_amount,
         reasons=reasons,
+        take_profit_1_fraction=config.take_profit_1_fraction,
+        move_stop_to_break_even_after_tp1=(
+            config.move_stop_to_break_even_after_tp1
+        ),
     )
