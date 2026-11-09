@@ -68,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
     arm = sub.add_parser("arm")
     arm.add_argument("--actor", required=True)
     arm.add_argument("--confirm", required=True)
+    arm.add_argument("--exchange", required=True)
+    arm.add_argument(
+        "--market-type",
+        default="spot",
+    )
 
     disarm = sub.add_parser("disarm")
     disarm.add_argument("--actor", required=True)
@@ -184,6 +189,7 @@ def main(argv=None) -> int:
                     guard.environment_enabled
                 ),
                 "control": asdict(state),
+                "context": order_store.load_execution_context(),
                 "active_orders": len(
                     order_store.active_orders()
                 ),
@@ -192,6 +198,10 @@ def main(argv=None) -> int:
             return 0
 
         if args.command == "arm":
+            order_store.bind_execution_context(
+                exchange_id=args.exchange,
+                market_type=args.market_type,
+            )
             state = guard.arm(
                 actor=args.actor,
                 confirmation=args.confirm,
