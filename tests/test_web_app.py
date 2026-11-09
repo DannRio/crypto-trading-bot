@@ -128,11 +128,13 @@ def test_backtest_runs_on_synthetic_candles(monkeypatch):
     monkeypatch.setattr(web, "get_ohlcv", lambda **kwargs: candles.copy())
     response = client.get(
         "/api/backtest?symbol=BTC/USD"
+        "&data_source=live"
         "&strategies=trend_continuation"
         "&min_score=65"
     )
     assert response.status_code == 200, response.text
     data = response.json()
+    assert data["data_source"] == "live"
     assert data["data_rows"] == n - 1
     assert data["metrics"]["initial_equity"] == 10000
     assert data["assumptions"]["fee_rate_per_side"] == 0.001
@@ -141,6 +143,108 @@ def test_backtest_runs_on_synthetic_candles(monkeypatch):
     assert data["strategies"] == ["trend_continuation"]
     assert isinstance(data["recent_trades"], list)
 
+
+
+def test_backtest_uses_full_saved_local_dataset(
+    monkeypatch,
+    tmp_path,
+):
+    n = 400
+    base = 100 + np.linspace(0, 40, n)
+    candles = pd.DataFrame({
+        "timestamp": pd.date_range(
+            "2023-01-01",
+            periods=n,
+            freq="h",
+            tz="UTC",
+        ),
+        "open": base - 0.2,
+        "high": base + 1.0,
+        "low": base - 1.0,
+        "close": base,
+        "volume": np.full(n, 500.0),
+    })
+
+    store = web.HistoricalDataStore(tmp_path)
+    store.upsert(
+        "kucoin",
+        "spot",
+        "BTC/USDT",
+        "1h",
+        candles,
+    )
+    monkeypatch.setattr(web, "HISTORY_ROOT", tmp_path)
+
+    response = client.get(
+        "/api/backtest",
+        params={
+            "exchange": "kucoin",
+            "market_type": "spot",
+            "symbol": "BTC/USDT",
+            "timeframe": "1h",
+            "data_source": "local",
+            "strategies": "trend_continuation",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["data_source"] == "local"
+    assert body["data_rows"] == n
+    assert body["data_start"].startswith("2023-01-01")
+    assert body["source_path"].endswith(
+        "kucoin/spot/BTC_USDT/1h.csv"
+    )
+    assert body["assumptions"]["single_timeframe_only"] is True
+
+
+def test_local_backtest_date_range_filters_saved_dataset(
+    monkeypatch,
+    tmp_path,
+):
+    timestamps = pd.date_range(
+        "2023-01-01",
+        periods=24 * 20,
+        freq="h",
+        tz="UTC",
+    )
+    candles = pd.DataFrame({
+        "timestamp": timestamps,
+        "open": np.full(len(timestamps), 100.0),
+        "high": np.full(len(timestamps), 101.0),
+        "low": np.full(len(timestamps), 99.0),
+        "close": np.full(len(timestamps), 100.0),
+        "volume": np.full(len(timestamps), 500.0),
+    })
+    store = web.HistoricalDataStore(tmp_path)
+    store.upsert(
+        "kucoin",
+        "spot",
+        "BTC/USDT",
+        "1h",
+        candles,
+    )
+    monkeypatch.setattr(web, "HISTORY_ROOT", tmp_path)
+
+    response = client.get(
+        "/api/backtest",
+        params={
+            "exchange": "kucoin",
+            "market_type": "spot",
+            "symbol": "BTC/USDT",
+            "timeframe": "1h",
+            "data_source": "local",
+            "start": "2023-01-05",
+            "end": "2023-01-15",
+        },
+    )
+
+    # Ten days is below the 220-candle minimum only if the end date were
+    # treated as exclusive midnight incorrectly. Inclusive-day handling
+    # yields 264 candles here.
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["data_rows"] == 24 * 11
 
 
 def test_web_scan_can_use_dynamic_universe(monkeypatch):
