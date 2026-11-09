@@ -16,6 +16,7 @@
 - [x] Duplicate detection
 - [x] Timestamp normalization
 - [x] Multi-exchange data interface
+- [x] Dynamic liquid-market universe
 
 ## Phase 3 — Market Analysis
 - [x] EMA

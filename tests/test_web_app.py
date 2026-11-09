@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from fastapi.testclient import TestClient
 
+from trading_bot.scanner import MarketCandidate, UniverseSelection
 from trading_bot.web import app as web
 
 
@@ -109,3 +110,95 @@ def test_backtest_runs_on_synthetic_candles(monkeypatch):
     assert data["assumptions"]["fee_rate_per_side"] == 0.001
     assert data["assumptions"]["slippage_bps_per_side"] == 5.0
     assert isinstance(data["recent_trades"], list)
+
+
+
+def test_web_scan_can_use_dynamic_universe(monkeypatch):
+    captured = {}
+
+    class FakeUniverse:
+        def __init__(self, **kwargs):
+            captured["universe_init"] = kwargs
+
+        def select(self, config):
+            captured["universe_config"] = config
+            return UniverseSelection(
+                candidates=(
+                    MarketCandidate(
+                        symbol="BTC/USDT",
+                        base="BTC",
+                        quote="USDT",
+                        market_type="spot",
+                        active=True,
+                        quote_volume=50_000_000,
+                        last=100_000,
+                        bid=99_990,
+                        ask=100_010,
+                        spread_bps=2.0,
+                    ),
+                    MarketCandidate(
+                        symbol="ETH/USDT",
+                        base="ETH",
+                        quote="USDT",
+                        market_type="spot",
+                        active=True,
+                        quote_volume=25_000_000,
+                        last=3_000,
+                        bid=2_999,
+                        ask=3_001,
+                        spread_bps=6.7,
+                    ),
+                ),
+                total_markets=300,
+                eligible_markets=120,
+            )
+
+    class FakeScanner:
+        def __init__(self, **kwargs):
+            captured["scanner_init"] = kwargs
+
+        def scan(self, symbols):
+            captured["symbols"] = symbols
+            assessment = SimpleNamespace(
+                status=SimpleNamespace(value="FORMING"),
+                signal=SimpleNamespace(value="LONG"),
+                score=65,
+                reason="Test setup",
+            )
+            return [
+                SimpleNamespace(
+                    symbol=symbol,
+                    assessment=assessment,
+                    score=65,
+                    structure=None,
+                    setup=None,
+                    data_quality=None,
+                    error=None,
+                )
+                for symbol in symbols
+            ]
+
+    monkeypatch.setattr(web, "DynamicMarketUniverse", FakeUniverse)
+    monkeypatch.setattr(web, "MarketScanner", FakeScanner)
+
+    response = client.get(
+        "/api/scan",
+        params={
+            "exchange": "kucoin",
+            "market_type": "spot",
+            "auto_universe": "true",
+            "quote_currencies": "USDT",
+            "max_markets": 2,
+            "min_quote_volume": 1_000_000,
+            "timeframe": "15m",
+            "confirm_timeframes": "4h",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["auto_universe"] is True
+    assert body["universe"]["total_markets"] == 300
+    assert captured["symbols"] == ["BTC/USDT", "ETH/USDT"]
+    assert captured["universe_config"].max_markets == 2
+    assert captured["scanner_init"]["confirmation_timeframes"] == ("4h",)
