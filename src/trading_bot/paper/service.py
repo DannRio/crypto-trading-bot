@@ -295,6 +295,16 @@ class PaperTradingService:
             strategy = result.assessment.strategy
             signal = result.assessment.signal.value
 
+            if self.journal.signal_seen(
+                result.symbol,
+                self.config.timeframe,
+                strategy,
+                signal,
+                signal_time,
+            ):
+                duplicates += 1
+                continue
+
             if (
                 self.config.market_type == "spot"
                 and result.assessment.signal == Signal.SHORT
@@ -309,16 +319,6 @@ class PaperTradingService:
                     reason="Spot paper service is long-only.",
                 )
                 rejected += 1
-                continue
-
-            if self.journal.signal_seen(
-                result.symbol,
-                self.config.timeframe,
-                strategy,
-                signal,
-                signal_time,
-            ):
-                duplicates += 1
                 continue
 
             if self.broker.has_exposure(
