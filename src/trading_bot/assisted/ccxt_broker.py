@@ -223,12 +223,12 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
             intent.symbol,
             "takeProfit",
         )
-        if stop_supported is not True:
+        if not stop_supported:
             raise RuntimeError(
                 "Exchange does not advertise attached stop-loss "
                 f"support for {intent.symbol}."
             )
-        if take_supported is not True:
+        if not take_supported:
             raise RuntimeError(
                 "Exchange does not advertise attached take-profit "
                 f"support for {intent.symbol}."
