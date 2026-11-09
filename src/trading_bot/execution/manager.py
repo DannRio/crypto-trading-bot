@@ -104,6 +104,27 @@ class OrderManager:
             now=now,
         )
 
+    def apply_snapshot(
+        self,
+        order_id: str,
+        snapshot: ExchangeOrderSnapshot,
+        *,
+        event_type: str = "RECONCILED",
+        now=None,
+    ) -> ManagedOrder:
+        order = self.store.get(order_id)
+        if order is None:
+            raise KeyError(
+                f"Unknown managed order: {order_id}"
+            )
+        return self._apply_snapshot(
+            order,
+            snapshot,
+            allowed_from=(order.status,),
+            event_type=event_type,
+            now=now,
+        )
+
     def submit(
         self,
         order_id: str,
