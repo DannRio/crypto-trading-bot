@@ -515,3 +515,48 @@ The authenticated adapter currently supports:
 The adapter's `execute()` method is intentionally hard-disabled. It does **not** call `create_order`. A prepared order must not become live until the order-management layer provides idempotent submission, persistent order state, partial-fill handling, reconciliation, and kill-switch integration.
 
 This boundary follows CCXT's current credential, market-loading, precision, and limit model.
+
+
+## Order management v1
+
+Version 0.14 adds a persistent normalized order-state manager. It still uses a no-network gateway; live exchange submission remains disabled.
+
+Managed order states:
+
+~~~text
+PREPARED
+  -> SUBMITTING
+      -> SUBMITTED
+      -> REJECTED
+      -> UNKNOWN
+SUBMITTED
+  -> PARTIALLY_FILLED
+  -> FILLED
+  -> CANCEL_PENDING
+      -> CANCELLED
+      -> UNKNOWN
+UNKNOWN
+  -> reconciliation only
+~~~
+
+Important safety behavior:
+
+- `intent_id` and `client_order_id` are unique so the same approved plan cannot create multiple managed orders.
+- An order is persisted as `SUBMITTING` **before** the gateway call.
+- If submission raises after the exchange may have accepted the request, the order becomes `UNKNOWN`.
+- `UNKNOWN` orders cannot be submitted again. They must be reconciled by exchange order id or client-order id first.
+- Reconciliation can recover an order that actually existed despite a network timeout.
+- Partial fills, full fills, cancellations, and terminal states are persisted.
+- All state transitions are written to an order-event audit log.
+- Compare-and-swap style transition checks reject stale/concurrent state changes.
+- Active orders survive process restart through SQLite persistence.
+
+Local state defaults to:
+
+~~~text
+data/orders/orders.db
+~~~
+
+and is ignored by Git.
+
+The current gateway is `InMemoryOrderGateway`, which never contacts an exchange. The next integration step is to route approved assisted intents through this manager, then add a CCXT order gateway with idempotent submission/reconciliation before enabling any live order call.
