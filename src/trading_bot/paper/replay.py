@@ -4,6 +4,7 @@ from trading_bot.analysis import add_indicators
 from trading_bot.core.enums import Signal, SetupStatus
 from trading_bot.decision import DecisionEngine
 from trading_bot.paper.broker import PaperBroker
+from trading_bot.strategies import DEFAULT_STRATEGIES
 
 
 def run_paper_replay(
@@ -16,6 +17,7 @@ def run_paper_replay(
     warmup_candles: int = 220,
     decision_lookback: int = 250,
     allow_short: bool = True,
+    strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES,
 ) -> PaperBroker:
     prepared = add_indicators(data.copy())
 
@@ -44,6 +46,7 @@ def run_paper_replay(
             account_equity=broker.account_equity(),
             risk_percent=risk_percent,
             min_confirmed_score=min_confirmed_score,
+            strategy_names=strategy_names,
         ).evaluate(history)
 
         if (
@@ -65,6 +68,7 @@ def run_paper_replay(
             setup=decision.setup,
             created_at=candle["timestamp"],
             regime=decision.structure.regime.value,
+            strategy=decision.assessment.strategy,
         )
 
     if not prepared.empty:
