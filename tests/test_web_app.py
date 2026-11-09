@@ -208,6 +208,8 @@ def test_web_scan_can_use_dynamic_universe(monkeypatch):
             "quote_currencies": "USDT",
             "max_markets": 2,
             "min_quote_volume": 1_000_000,
+            "min_history_candles": 220,
+            "max_history_probes": 40,
             "timeframe": "15m",
             "confirm_timeframes": "4h",
             "entry_timeframe": "5m",
@@ -221,6 +223,9 @@ def test_web_scan_can_use_dynamic_universe(monkeypatch):
     assert body["universe"]["total_markets"] == 300
     assert captured["symbols"] == ["BTC/USDT", "ETH/USDT"]
     assert captured["universe_config"].max_markets == 2
+    assert captured["universe_config"].min_history_candles == 220
+    assert captured["universe_config"].history_timeframe == "15m"
+    assert captured["universe_config"].max_history_probes == 40
     assert captured["scanner_init"]["confirmation_timeframes"] == ("4h",)
     assert captured["scanner_init"]["entry_timeframe"] == "5m"
     assert captured["scanner_init"]["strategy_names"] == (
