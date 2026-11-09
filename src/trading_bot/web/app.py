@@ -518,6 +518,72 @@ def assisted_stage(request: StageIntentRequest):
         store.close()
 
 
+
+
+@app.post("/api/assisted/{intent_id}/approve")
+def assisted_approve(
+    intent_id: str,
+    request: IntentDecisionRequest,
+):
+    if not request.actor.strip():
+        raise HTTPException(422, "Decision actor is required.")
+
+    store = IntentStore(ASSISTED_DB_PATH)
+    try:
+        service = AssistedTradingService(store)
+        try:
+            intent, receipt = service.approve(
+                intent_id,
+                actor=request.actor,
+                note=request.note,
+                execute=True,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+        return {
+            "mode": "DRY_RUN",
+            "live_execution": False,
+            "intent": _safe(intent),
+            "receipt": _safe(receipt),
+        }
+    finally:
+        store.close()
+
+
+@app.post("/api/assisted/{intent_id}/reject")
+def assisted_reject(
+    intent_id: str,
+    request: IntentDecisionRequest,
+):
+    if not request.actor.strip():
+        raise HTTPException(422, "Decision actor is required.")
+
+    store = IntentStore(ASSISTED_DB_PATH)
+    try:
+        service = AssistedTradingService(store)
+        try:
+            intent = service.reject(
+                intent_id,
+                actor=request.actor,
+                note=request.note,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+        return {
+            "mode": "DRY_RUN",
+            "live_execution": False,
+            "intent": _safe(intent),
+        }
+    finally:
+        store.close()
+
+
 @app.get("/api/backtest")
 def backtest(
     exchange: str = Query("kraken"),
