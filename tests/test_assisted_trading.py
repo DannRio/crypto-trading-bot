@@ -158,7 +158,11 @@ def test_spot_short_is_rejected_by_broker_capability(tmp_path):
 
 def test_approval_executes_only_through_dry_run_adapter(tmp_path):
     store = IntentStore(tmp_path / "assisted.db")
-    broker = DryRunBrokerAdapter()
+    broker = DryRunBrokerAdapter(
+        now_fn=lambda: pd.Timestamp(
+            "2026-01-01T10:15:00Z"
+        )
+    )
     service = AssistedTradingService(
         store,
         broker=broker,
