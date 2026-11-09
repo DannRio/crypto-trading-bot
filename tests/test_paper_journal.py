@@ -1,3 +1,5 @@
+import sqlite3
+
 import pandas as pd
 
 from trading_bot.core.enums import Signal, SetupStatus
@@ -74,7 +76,84 @@ def test_journal_persists_closed_trade(tmp_path):
 
     assert len(orders) == 1
     assert orders.iloc[0]["status"] == "CLOSED"
+    assert orders.iloc[0]["strategy"] == "trend_continuation"
     assert len(trades) == 1
     assert trades.iloc[0]["net_pnl"] == 20.0
+    assert trades.iloc[0]["strategy"] == "trend_continuation"
 
+    journal.close()
+
+
+
+def test_journal_migrates_legacy_tables_with_strategy_column(tmp_path):
+    path = tmp_path / "legacy.db"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE paper_orders (
+            order_id TEXT PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            signal TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            reference_entry REAL NOT NULL,
+            stop_loss REAL NOT NULL,
+            take_profit_1 REAL NOT NULL,
+            take_profit_2 REAL NOT NULL,
+            position_size REAL NOT NULL,
+            planned_risk REAL NOT NULL,
+            score INTEGER NOT NULL,
+            regime TEXT NOT NULL,
+            bars_remaining INTEGER NOT NULL,
+            filled_at TEXT,
+            fill_price REAL,
+            entry_fee REAL NOT NULL,
+            closed_at TEXT,
+            exit_price REAL,
+            exit_reason TEXT
+        );
+
+        CREATE TABLE paper_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            signal TEXT NOT NULL,
+            entry_time TEXT NOT NULL,
+            exit_time TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            exit_price REAL NOT NULL,
+            position_size REAL NOT NULL,
+            gross_pnl REAL NOT NULL,
+            fees REAL NOT NULL,
+            net_pnl REAL NOT NULL,
+            risk_amount REAL NOT NULL,
+            r_multiple REAL NOT NULL,
+            exit_reason TEXT NOT NULL,
+            score INTEGER NOT NULL,
+            regime TEXT NOT NULL
+        );
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    journal = PaperJournal(path)
+
+    order_columns = {
+        row[1]
+        for row in journal.connection.execute(
+            "PRAGMA table_info(paper_orders)"
+        ).fetchall()
+    }
+    trade_columns = {
+        row[1]
+        for row in journal.connection.execute(
+            "PRAGMA table_info(paper_trades)"
+        ).fetchall()
+    }
+
+    assert "strategy" in order_columns
+    assert "strategy" in trade_columns
     journal.close()
