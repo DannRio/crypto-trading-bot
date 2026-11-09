@@ -37,7 +37,7 @@ from trading_bot.scanner import (
 from trading_bot.strategies import normalize_strategy_names
 
 log = logging.getLogger(__name__)
-app = FastAPI(title="Trading Bot — Research & Assisted Dashboard", version="0.15.0")
+app = FastAPI(title="Trading Bot — Research & Assisted Dashboard", version="0.16.0")
 
 EXCHANGES = {"kraken", "kucoin", "binance", "bybit", "okx", "coinbase"}
 MARKET_TYPES = {"spot", "swap", "future"}
