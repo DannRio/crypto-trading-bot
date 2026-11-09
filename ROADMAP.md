@@ -88,9 +88,12 @@
 - [x] Manual guarded risk-halt reset
 
 ## Phase 9 — Assisted Trading
-- [ ] Approve/reject workflow
-- [ ] Authenticated broker abstraction
-- [ ] Order management
+- [x] Immutable server-generated trade-intent queue
+- [x] Approve/reject workflow (dry-run only)
+- [x] Broker adapter protocol + dry-run adapter
+- [x] Approval/decision/execution audit trail
+- [ ] Authenticated broker adapter
+- [ ] Exchange order management
 
 ## Phase 10 — Automated Execution
 - [ ] Live exchange adapter
