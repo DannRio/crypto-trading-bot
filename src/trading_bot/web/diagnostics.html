@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Strategy Diagnostics · Trading Bot</title>
+<style>
+:root{color-scheme:dark;--bg:#09111c;--card:#131f30;--card2:#0d1725;--border:#30415c;--text:#edf4ff;--muted:#9badc9;--accent:#92b4ff;--green:#58d7af;--red:#fc8793;--gold:#f5c678}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 90% -10%,#223c5a,transparent 52%),var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:1500px;margin:auto;padding:28px 24px 56px}a{color:var(--accent)}.top{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:22px}.top h1{margin:8px 0 2px;font-size:26px;line-height:1.25}.sub{color:var(--muted);margin:0}.tag{border-radius:25px;border:1px solid #335847;background:#18352e;color:var(--green);padding:7px 13px;font-size:12px;font-weight:750;white-space:nowrap}.panel{background:var(--card);border:1px solid var(--border);border-radius:15px;padding:20px;margin-top:16px}.panel h2{font-size:17px;margin:0 0 12px}.small{font-size:12px;color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.grid-4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.field label{display:block;color:var(--muted);font-size:12px;margin-bottom:5px}.field input,.field select{display:block;width:100%;background:var(--card2);color:var(--text);border:1px solid #3b4f69;border-radius:9px;padding:10px 11px;font:inherit;min-height:42px}.field input:focus,.field select:focus{outline:2px solid var(--accent);outline-offset:1px}.controls{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px;margin-top:14px}button{background:var(--accent);border:0;border-radius:9px;padding:10px 16px;color:#0c1827;font:inherit;font-weight:750;cursor:pointer}button.ghost{background:#293d58;color:var(--text);border:1px solid #425575}button:disabled{opacity:.55;cursor:wait}.status{padding:12px;border-radius:9px;background:var(--card2);color:var(--muted);margin-top:14px}.status.error{color:#ffb4be;border:1px solid #7b3b4b;background:#3d222c}.metrics{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-top:13px}.metric{background:var(--card2);border:1px solid var(--border);border-radius:11px;padding:15px}.metric .v{font-size:23px;font-weight:780;font-variant-numeric:tabular-nums;margin-top:3px}.metric .k{font-size:12px;color:var(--muted)}.positive{color:var(--green)}.negative{color:var(--red)}.neutral{color:var(--text)}.double{display:grid;grid-template-columns:1fr 1fr;gap:16px}.chart{height:280px;width:100%;background:var(--card2);border:1px solid var(--border);border-radius:10px;overflow:hidden;padding:8px}.chart svg{height:100%;width:100%;display:block}.chart-note{color:var(--muted);font-size:12px;margin:8px 0 0}.summary-box{margin-top:10px;display:flex;gap:12px;flex-wrap:wrap}.summary-box span{background:var(--card2);border:1px solid var(--border);border-radius:9px;padding:9px 12px;font-size:12px}.scroll{overflow:auto}table{width:100%;border-collapse:collapse;min-width:740px}th,td{padding:11px 10px;text-align:left;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums;white-space:nowrap}th{font-size:12px;color:var(--muted);position:sticky;top:0;background:var(--card)}td{font-size:13px}tr:hover td{background:#1a2b40}.breakdown-row{display:grid;grid-template-columns:1fr 92px 85px 82px;gap:10px;align-items:center;border-bottom:1px solid var(--border);padding:11px 5px;cursor:pointer;border-radius:4px}.breakdown-row:hover{background:#203149}.breakdown-row strong{font-size:13px;overflow-wrap:anywhere}.breakdown-row span{font-size:12px}.track{height:5px;background:#2d3950;border-radius:4px;margin-top:6px}.fill{height:100%;border-radius:4px;background:var(--accent)}.disclaimer{color:var(--muted);font-size:12px;padding:8px 0}.paging{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px}.hidden{display:none!important}#equityHover{color:var(--muted);font-size:12px;min-height:18px;margin-top:5px}kbd{font-family:inherit;border:1px solid #4e6380;padding:2px 4px;border-radius:4px}@media(max-width:1180px){.grid{grid-template-columns:repeat(3,1fr)}.metrics{grid-template-columns:repeat(3,1fr)}.double{grid-template-columns:1fr}}@media(max-width:700px){main{padding:16px 11px}.top h1{font-size:22px}.grid,.grid-4{grid-template-columns:repeat(2,minmax(0,1fr))}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.panel{padding:13px}.breakdown-row{grid-template-columns:1fr 70px 70px 70px;gap:5px}.tag{font-size:10px}}
+</style>
+</head>
+<body>
+<main>
+<header class="top">
+<div><a href="/">← Market scanner and backtester</a><h1>Strategy Diagnostics</h1><p class="sub">Multi-year research · annual performance · equity · setup quality · trade analysis</p></div>
+<div class="tag">RESEARCH ONLY · NO LIVE ORDERS</div>
+</header>
+
+<section class="panel">
+<h2>Research dataset and assumptions</h2>
+<div class="grid">
+<div class="field"><label for="dataset">Saved dataset</label><select id="dataset"><option value="">Find local history first</option></select></div>
+<div class="field"><label for="exchange">Exchange</label><select id="exchange"><option>kucoin</option><option>kraken</option><option>krakenfutures</option><option>bybit</option><option>binance</option><option>okx</option><option>coinbase</option></select></div>
+<div class="field"><label for="type">Market type</label><select id="type"><option>spot</option><option>swap</option><option>future</option></select></div>
+<div class="field"><label for="symbol">Symbol</label><input id="symbol" value="BTC/USDT" spellcheck="false"></div>
+<div class="field"><label for="timeframe">Timeframe</label><select id="timeframe"><option>5m</option><option>15m</option><option selected>1h</option><option>4h</option><option>1d</option></select></div>
+</div>
+<div class="grid" style="margin-top:12px">
+<div class="field"><label for="equity">Starting equity (quote units)</label><input id="equity" type="number" min="1" value="10000"></div>
+<div class="field"><label for="risk">Risk per trade (%)</label><input id="risk" type="number" min="0.01" max="5" step="0.1" value="1"></div>
+<div class="field"><label for="score">Minimum confirmed score</label><input id="score" type="number" min="0" max="100" value="70"></div>
+<div class="field"><label for="fees">Fee fraction per side</label><input id="fees" type="number" min="0" max="0.05" step="0.0001" value="0.001"></div>
+<div class="field"><label for="slippage">Slippage (bps per side)</label><input id="slippage" type="number" min="0" max="500" step="1" value="5"></div>
+</div>
+<div class="controls">
+<span class="small" id="datasetHint">Select the exact saved OHLCV dataset. Diagnostics use one consistent backtest run.</span>
+<div style="display:flex;gap:10px"><button class="ghost" id="findDatasets">Find saved history</button><button id="run">Run diagnostics</button></div>
+</div>
+<div class="status" id="status" role="status" aria-live="polite">Load a historical dataset to generate diagnostics. Local research runs can take time on multi-year hourly data.</div>
+</section>
+
+<section class="panel hidden" id="results">
+<div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">
+<div><h2>Strategy-wide performance</h2><p class="small" id="period"></p></div>
+<span class="small" id="runLabel"></span>
+</div>
+<div class="metrics" id="metrics"></div>
+<p class="chart-note">Headline metrics describe the full original strategy run. Trade filters below do not recalculate portfolio returns.</p>
+</section>
+
+<section class="double hidden" id="charts">
+<div class="panel"><h2>Annual marked-equity returns</h2><div class="chart" id="yearChart"></div><p class="chart-note">Click a year to filter the trade table and equity timeline. Annual year boundaries use UTC; selecting a timezone changes labels only.</p></div>
+<div class="panel"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><h2>Equity curve</h2><div style="display:flex;gap:10px;align-items:center"><div class="field" style="width:120px"><label for="curveMeasure">Display</label><select id="curveMeasure"><option value="equity">Equity</option><option value="drawdown_pct">Drawdown %</option></select></div><div class="field" style="width:125px"><label for="tz">Chart timezone</label><select id="tz"><option value="America/Halifax">Halifax</option><option value="UTC">UTC</option></select></div></div></div><div class="chart" id="equityChart"></div><div id="equityHover">Hover over the curve for values.</div><p class="chart-note">Marked equity includes open position P&amp;L and estimated closing fees; shown points are downsampled with extrema retained.</p></div>
+</section>
+
+<section class="panel hidden" id="filtersPanel">
+<h2>Trade explorer</h2>
+<div class="grid">
+<div class="field"><label for="year">Exit year</label><select id="year"><option value="all">All years</option></select></div>
+<div class="field"><label for="side">Direction</label><select id="side"><option value="all">Both directions</option></select></div>
+<div class="field"><label for="bucket">Setup score</label><select id="bucket"><option value="all">All scores</option></select></div>
+<div class="field"><label for="regime">Entry market regime</label><select id="regime"><option value="all">All regimes</option></select></div>
+<div class="field"><label for="outcome">Trade outcome</label><select id="outcome"><option value="all">All trades</option><option value="win">Winning only</option><option value="loss">Losing only</option></select></div>
+</div>
+<div class="controls">
+<div class="field" style="min-width:180px"><label for="exitReason">Exit reason</label><select id="exitReason"><option value="all">All exits</option></select></div>
+<div style="display:flex;gap:10px"><button class="ghost" id="reset">Clear filters</button><button class="ghost" id="export">Export filtered CSV</button></div>
+</div>
+<div class="summary-box" id="filterSummary"></div>
+<p class="chart-note">Filtered trade P&amp;L and expectancy are descriptive only. They are NOT the return of a separately executed filtered strategy.</p>
+</section>
+
+<section class="double hidden" id="breakdowns">
+<div class="panel"><h2>Setup-score buckets</h2><div class="small">Trade counts, net P&amp;L, win rate, and average R. Click a row to filter trades.</div><div id="scoreBreakdown"></div></div>
+<div class="panel"><h2>Market regimes at entry</h2><div class="small">A regime is recorded when the decision engine qualified the setup. Click a row to filter trades.</div><div id="regimeBreakdown"></div></div>
+</section>
+
+<section class="panel hidden" id="annualTablePanel">
+<h2>Annual performance details</h2>
+<div class="scroll"><table><thead><tr><th>Year</th><th>Start equity</th><th>End equity</th><th>Marked return</th><th>Max global-peak DD seen</th><th>Trades closed</th><th>Closed-trade P&amp;L</th><th>Win rate</th></tr></thead><tbody id="annualRows"></tbody></table></div>
+</section>
+
+<section class="panel hidden" id="tradesPanel">
+<div class="controls" style="margin-top:0"><h2>Trade-level analysis</h2><div class="field"><label for="sort">Sort trades</label><select id="sort"><option value="newest">Newest exit</option><option value="oldest">Oldest exit</option><option value="best">Highest P&amp;L</option><option value="worst">Lowest P&amp;L</option><option value="score">Highest setup score</option><option value="holding">Longest holding time</option></select></div></div>
+<div class="scroll"><table><thead><tr><th id="tradeTimeHead">Exit (Halifax)</th><th>Side</th><th>Score</th><th>Regime</th><th>Entry</th><th>Exit</th><th>Net P&amp;L</th><th>R</th><th>Hold (h)</th><th>Exit reason</th></tr></thead><tbody id="tradeRows"></tbody></table></div>
+<div class="paging"><span class="small" id="pageStatus"></span><div style="display:flex;gap:10px"><button class="ghost" id="prev">Previous</button><button class="ghost" id="next">Next</button></div></div>
+</section>
+
+<section class="panel hidden" id="cautions"><h2>Interpretation and limitations</h2><div id="notes"></div></section>
+</main>
+<script>
+"use strict";
+const $=selector=>document.querySelector(selector);
+const svgNS="http://www.w3.org/2000/svg";
+const store={report:null,filtered:[],page:0,perPage:25};
+const fmt=(v,places=2)=>v==null||!Number.isFinite(Number(v))?"—":Number(v).toLocaleString("en-CA",{minimumFractionDigits:places,maximumFractionDigits:places});
+const percent=v=>v==null?"—":fmt(v,2)+"%";
+function timezone(){return $("#tz").value}
+function formatTime(value){return new Intl.DateTimeFormat("en-CA",{timeZone:timezone(),year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).format(new Date(value))}
+function formatDate(value){return new Intl.DateTimeFormat("en-CA",{timeZone:timezone(),year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(value))}
+const pnlClass=v=>v>0?"positive":v<0?"negative":"neutral";
+function status(message,error=false){$("#status").textContent=message;$("#status").classList.toggle("error",error)}
+async function getJSON(url){const response=await fetch(url);const obj=await response.json().catch(()=>({detail:"Invalid server response"}));if(!response.ok)throw Error(Array.isArray(obj.detail)?obj.detail.map(x=>x.msg).join("; "):obj.detail||"Request failed");return obj}
+function el(tag,cls,text){const node=document.createElement(tag);if(cls)node.className=cls;if(text!==undefined)node.textContent=text;return node}
+function svgEl(tag,attrs){const node=document.createElementNS(svgNS,tag);for(const [key,value] of Object.entries(attrs||{}))node.setAttribute(key,String(value));return node}
+function setOptions(selector,values,allLabel){const s=$(selector);s.replaceChildren();if(allLabel){const o=el("option","",allLabel);o.value="all";s.appendChild(o)}for(const v of values){const o=el("option","",String(v));o.value=String(v);s.appendChild(o)}}
+function params(){return new URLSearchParams({exchange:$("#exchange").value,market_type:$("#type").value,symbol:$("#symbol").value.trim(),timeframe:$("#timeframe").value,equity:$("#equity").value,risk_percent:$("#risk").value,min_score:$("#score").value,fee_rate:$("#fees").value,slippage_bps:$("#slippage").value})}
+async function findDatasets(){const b=$("#findDatasets");b.disabled=true;try{const data=await getJSON("/api/history/datasets");const s=$("#dataset");s.replaceChildren();const first=el("option","",data.datasets.length?"Choose a saved dataset":"No saved OHLCV datasets found");first.value="";s.appendChild(first);for(const d of data.datasets){const o=el("option","",d.exchange+" · "+d.market_type+" · "+(d.symbol||d.stored_symbol)+" · "+d.timeframe);o.value=JSON.stringify(d);s.appendChild(o)}$("#datasetHint").textContent=data.datasets.length+" saved dataset(s) found under data/history/";if(data.datasets.length===1&&data.datasets[0].symbol){s.selectedIndex=1;s.dispatchEvent(new Event("change"))}}catch(err){status(err.message,true)}finally{b.disabled=false}}
+function chartSvg(width=980,height=260){const s=svgEl("svg",{viewBox:"0 0 "+width+" "+height,role:"img",preserveAspectRatio:"none"});return s}
+function label(svg,text,x,y,anchor="start",size=12){const node=svgEl("text",{x,y,"text-anchor":anchor,fill:"#a7b8d0","font-size":size});node.textContent=text;svg.appendChild(node);return node}
+function renderAnnualChart(){const host=$("#yearChart");host.replaceChildren();const values=store.report.yearly;const svg=chartSvg();host.appendChild(svg);if(!values.length)return;const w=980,h=260,left=55,right=22,top=18,bottom=32;const series=values.map(v=>Number(v.return_pct)||0);const lo=Math.min(0,...series),hi=Math.max(0,...series);const range=Math.max(1,hi-lo);const y=v=>top+(hi-v)/range*(h-top-bottom);const zero=y(0);for(let k=0;k<=4;k++){const val=lo+range*k/4;const yy=y(val);svg.appendChild(svgEl("line",{x1:left,y1:yy,x2:w-right,y2:yy,stroke:"#31415a","stroke-width":1}));label(svg,fmt(val,1)+"%",left-7,yy+4,"end",11)}const slot=(w-left-right)/values.length;const bw=Math.min(110,slot*.56);const selected=$("#year").value;values.forEach((v,i)=>{const x=left+slot*(i+.5)-bw/2;const yy=y(v.return_pct||0);const r=svgEl("rect",{x,y:Math.min(yy,zero),width:bw,height:Math.max(2,Math.abs(zero-yy)),rx:4,fill:v.return_pct>=0?"#58d7af":"#fc8793",opacity:selected!=="all"&&selected!==String(v.year)?".35":"1",tabindex:0,role:"button","aria-label":"Filter trades to "+v.year});const title=svgEl("title");title.textContent=v.year+" return "+percent(v.return_pct)+"; click to filter";r.appendChild(title);const choose=()=>{$("#year").value=String(v.year);updateFilters()};r.addEventListener("click",choose);r.addEventListener("keydown",ev=>{if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();choose()}});svg.appendChild(r);label(svg,String(v.year),x+bw/2,h-9,"middle",12)})}
+function renderEquity(){const host=$("#equityChart");host.replaceChildren();if(!store.report)return;let points=store.report.equity_curve;const selected=$("#year").value;if(selected!=="all")points=points.filter(p=>new Date(p.time).getUTCFullYear()===Number(selected));if(!points.length){host.textContent="No equity points for the selected year.";return}const kind=$("#curveMeasure").value;const values=points.map(p=>Number(p[kind]));const low=Math.min(...values),high=Math.max(...values);const range=Math.max(1e-9,high-low);const w=980,h=260,l=76,r=20,t=22,b=28;const x=i=>l+(w-l-r)*(points.length===1?.5:i/(points.length-1));const y=v=>t+(high-v)/range*(h-t-b);const svg=chartSvg();host.appendChild(svg);for(let i=0;i<5;i++){const value=low+range*i/4;const yy=y(value);svg.appendChild(svgEl("line",{x1:l,y1:yy,x2:w-r,y2:yy,stroke:"#30425d"}));label(svg,kind==="equity"?fmt(value,0):percent(value),l-8,yy+4,"end",11)}const poly=svgEl("polyline",{points:points.map((p,i)=>x(i)+","+y(values[i])).join(" "),fill:"none",stroke:kind==="equity"?"#83b6ff":"#fc8793","stroke-width":"2.6","stroke-linejoin":"round","stroke-linecap":"round"});svg.appendChild(poly);label(svg,formatDate(points[0].time),l,h-5);label(svg,formatDate(points[points.length-1].time),w-r,h-5,"end");const cross=svgEl("line",{x1:l,y1:t,x2:l,y2:h-b,stroke:"#e9f4ff","stroke-dasharray":"4 4",opacity:0});const dot=svgEl("circle",{r:5,fill:"#f3f9ff",cx:l,cy:t,opacity:0});svg.append(cross,dot);svg.addEventListener("mousemove",event=>{const bounds=svg.getBoundingClientRect();const px=(event.clientX-bounds.left)/bounds.width*w;const i=Math.max(0,Math.min(points.length-1,Math.round((px-l)/(w-l-r)*(points.length-1))));const xx=x(i);cross.setAttribute("x1",xx);cross.setAttribute("x2",xx);cross.setAttribute("opacity","1");dot.setAttribute("cx",xx);dot.setAttribute("cy",y(values[i]));dot.setAttribute("opacity","1");$("#equityHover").textContent=formatTime(points[i].time)+" "+(timezone()==="UTC"?"UTC":"Halifax")+" · "+(kind==="equity"?"Equity "+fmt(values[i]):"Drawdown "+percent(values[i]))});svg.addEventListener("mouseleave",()=>{cross.setAttribute("opacity","0");dot.setAttribute("opacity","0")})}
+function metric(title,value,cls){const node=el("div","metric");node.append(el("div","k",title),el("div","v "+(cls||"neutral"),value));return node}
+function fillTable(id,rows){const body=$(id);body.replaceChildren();for(const items of rows){const tr=el("tr");for(const item of items){const td=el("td",item.cls||"",item.value);tr.appendChild(td)}body.appendChild(tr)}}
+function fromValues(...values){return values.map(value=>typeof value==="string"?{value}:value)}
+function renderReport(){const data=store.report;for(const id of ["results","charts","filtersPanel","breakdowns","annualTablePanel","tradesPanel","cautions"])$("#"+id).classList.remove("hidden");$("#period").textContent=data.dataset.symbol+" · "+data.dataset.exchange+" "+data.dataset.market_type+" · "+data.dataset.rows.toLocaleString()+" candles · "+data.dataset.start.slice(0,10)+" to "+data.dataset.end.slice(0,10);$("#runLabel").textContent="Min score "+data.assumptions.min_score+" · risk "+data.assumptions.risk_percent+"% · fees "+(100*data.assumptions.fee_rate_per_side).toFixed(2)+"%/side";const s=data.summary;const box=$("#metrics");box.replaceChildren(metric("Total return",percent(s.return_pct),pnlClass(s.return_pct)),metric("Final equity",fmt(s.final_equity)),metric("Max drawdown",percent(s.max_drawdown_pct),"negative"),metric("Completed trades",fmt(s.trades,0)),metric("Win rate",percent(s.win_rate_pct)),metric("Profit factor",fmt(s.profit_factor,3)));fillTable("#annualRows",data.yearly.map(y=>fromValues(String(y.year),fmt(y.start_equity),fmt(y.end_equity),{value:percent(y.return_pct),cls:pnlClass(y.return_pct)},percent(y.max_global_peak_drawdown_pct),fmt(y.trades_closed,0),{value:fmt(y.closed_trade_pnl),cls:pnlClass(y.closed_trade_pnl)},percent(y.win_rate_pct))));setOptions("#year",data.yearly.map(y=>y.year),"All years");setOptions("#side",[...new Set(data.trades.map(t=>t.side))].sort(),"Both directions");setOptions("#bucket",data.score_buckets.map(x=>x.label),"All scores");setOptions("#regime",[...new Set(data.trades.map(t=>t.regime))].sort(),"All regimes");setOptions("#exitReason",[...new Set(data.trades.map(t=>t.exit_reason))].sort(),"All exits");const notes=$("#notes");notes.replaceChildren();for(const note of data.disclaimers)notes.appendChild(el("p","disclaimer",note));if(data.dataset.data_quality_warnings.length)notes.appendChild(el("p","negative",data.dataset.data_quality_warnings.join("; ")));updateFilters()}
+function tradeStats(trades){const wins=trades.filter(t=>t.pnl>0);const losses=trades.filter(t=>t.pnl<0);const grossProfit=wins.reduce((s,t)=>s+t.pnl,0);const grossLoss=-losses.reduce((s,t)=>s+t.pnl,0);const rvals=trades.filter(t=>t.r_multiple!=null);return{count:trades.length,pnl:trades.reduce((s,t)=>s+t.pnl,0),winRate:trades.length?wins.length/trades.length*100:null,profitFactor:grossLoss?grossProfit/grossLoss:null,avgR:rvals.length?rvals.reduce((s,t)=>s+t.r_multiple,0)/rvals.length:null}}
+function getFiltered(){return store.report.trades.filter(t=>($("#year").value==="all"||String(t.year)===$("#year").value)&&($("#side").value==="all"||t.side===$("#side").value)&&($("#bucket").value==="all"||t.score_bucket===$("#bucket").value)&&($("#regime").value==="all"||t.regime===$("#regime").value)&&($("#exitReason").value==="all"||t.exit_reason===$("#exitReason").value)&&($("#outcome").value==="all"||$("#outcome").value==="win"&&t.pnl>0||$("#outcome").value==="loss"&&t.pnl<0))}
+function drawBreakdown(id,field,allLabels){const host=$("#"+id);host.replaceChildren();const base=store.filtered;const labels=allLabels||[...new Set(base.map(t=>t[field]))].sort();const stats=labels.map(label=>({label,stats:tradeStats(base.filter(t=>t[field]===label))}));const largest=Math.max(1,...stats.map(a=>a.stats.count));for(const {label:l,stats:s} of stats){const row=el("div","breakdown-row");row.tabIndex=0;row.setAttribute("role","button");const left=el("div");left.append(el("strong","",l));const track=el("div","track");const fill=el("div","fill");fill.style.width=String(100*s.count/largest)+"%";track.appendChild(fill);left.appendChild(track);row.append(left,el("span","",s.count+" trades"),el("span",pnlClass(s.pnl),fmt(s.pnl)),el("span","",s.avgR==null?"—":fmt(s.avgR,2)+" R"));row.title="Win rate "+percent(s.winRate)+" · click to filter";const target=field==="score_bucket"?"#bucket":"#regime";const apply=()=>{$(target).value=l;updateFilters()};row.addEventListener("click",apply);row.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();apply()}});host.appendChild(row)}if(!stats.length)host.appendChild(el("p","small","No trades match the current filters."))}
+function renderTrades(){const sort=$("#sort").value;let rows=[...store.filtered];if(sort==="newest")rows.sort((a,b)=>b.exit_time.localeCompare(a.exit_time));if(sort==="oldest")rows.sort((a,b)=>a.exit_time.localeCompare(b.exit_time));if(sort==="best")rows.sort((a,b)=>b.pnl-a.pnl);if(sort==="worst")rows.sort((a,b)=>a.pnl-b.pnl);if(sort==="score")rows.sort((a,b)=>b.score-a.score);if(sort==="holding")rows.sort((a,b)=>b.holding_hours-a.holding_hours);const pages=Math.max(1,Math.ceil(rows.length/store.perPage));store.page=Math.min(store.page,pages-1);const subset=rows.slice(store.page*store.perPage,(store.page+1)*store.perPage);fillTable("#tradeRows",subset.map(t=>fromValues(formatTime(t.exit_time),t.side,String(t.score),t.regime,fmt(t.entry_price,4),fmt(t.exit_price,4),{value:fmt(t.pnl),cls:pnlClass(t.pnl)},fmt(t.r_multiple,2),fmt(t.holding_hours,1),t.exit_reason)));$("#pageStatus").textContent=rows.length+" matching trades · page "+(store.page+1)+" of "+pages;$("#prev").disabled=store.page===0;$("#next").disabled=store.page>=pages-1}
+function updateFilters(){if(!store.report)return;store.page=0;store.filtered=getFiltered();const m=tradeStats(store.filtered);const summary=$("#filterSummary");summary.replaceChildren(el("span","",m.count+" matching trades"),el("span","", "Net trade P&L "+fmt(m.pnl)),el("span","","Win rate "+percent(m.winRate)),el("span","","Profit factor "+fmt(m.profitFactor,2)),el("span","","Average R "+fmt(m.avgR,3)));drawBreakdown("scoreBreakdown","score_bucket",store.report.score_buckets.map(x=>x.label));drawBreakdown("regimeBreakdown","regime",[...new Set(store.report.trades.map(t=>t.regime))].sort());renderAnnualChart();renderEquity();renderTrades()}
+function resetFilters(){for(const id of ["year","side","bucket","regime","exitReason","outcome"])$("#"+id).value="all";updateFilters()}
+async function run(){const b=$("#run");b.disabled=true;status("Computing historical diagnostics from the selected local dataset. This is a single backtest run, not parameter optimization.");try{const data=await getJSON("/api/diagnostics?"+params());store.report=data;renderReport();status("Diagnostics completed · "+data.summary.trades+" trades · "+data.dataset.rows.toLocaleString()+" historical candles.");}catch(err){status(err.message,true)}finally{b.disabled=false}}
+function exportCSV(){if(!store.report)return;const fields=["entry_time","exit_time","side","score","score_bucket","regime","entry_price","exit_price","pnl","r_multiple","risk_amount","holding_hours","exit_reason"];const safe=value=>{let text=value==null?"":String(value);if(typeof value==="string"&&/^[=+@\-\t\r]/.test(text))text="'"+text;return '"'+text.replaceAll('"','""')+'"'};const csv=[fields.join(","),...store.filtered.map(t=>fields.map(k=>safe(t[k])).join(","))].join("\r\n");const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));const a=document.createElement("a");a.href=url;a.download="strategy_diagnostics_filtered_trades.csv";document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)}
+$("#dataset").addEventListener("change",()=>{if(!$("#dataset").value)return;const v=JSON.parse($("#dataset").value);$("#exchange").value=v.exchange;$("#type").value=v.market_type;$("#timeframe").value=v.timeframe;if(v.symbol)$("#symbol").value=v.symbol;else status("This archived symbol is ambiguous. Enter the original exact CCXT instrument symbol before running diagnostics.",true)});
+$("#findDatasets").addEventListener("click",findDatasets);
+$("#run").addEventListener("click",run);
+for(const selector of ["#year","#side","#bucket","#regime","#outcome","#exitReason"])$(selector).addEventListener("change",updateFilters);
+$("#sort").addEventListener("change",renderTrades);
+$("#curveMeasure").addEventListener("change",renderEquity);
+$("#tz").addEventListener("change",()=>{
+  $("#tradeTimeHead").textContent="Exit ("+(timezone()==="UTC"?"UTC":"Halifax")+")";
+  renderEquity();renderTrades();
+});
+$("#reset").addEventListener("click",resetFilters);
+$("#export").addEventListener("click",exportCSV);
+$("#prev").addEventListener("click",()=>{store.page=Math.max(0,store.page-1);renderTrades()});
+$("#next").addEventListener("click",()=>{store.page++;renderTrades()});
+findDatasets();
+</script>
+</body></html>

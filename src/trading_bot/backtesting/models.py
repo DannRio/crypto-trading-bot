@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 
@@ -34,3 +34,6 @@ class BacktestResult:
     profit_factor: float
     average_pnl: float
     trades: pd.DataFrame
+    # Candle-close marked equity, including open P&L and estimated close fee.
+    # Optional to retain compatibility with existing consumer code.
+    equity_curve: pd.DataFrame = field(default_factory=pd.DataFrame)

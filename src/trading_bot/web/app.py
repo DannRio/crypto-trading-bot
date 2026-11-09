@@ -25,6 +25,7 @@ from trading_bot.exchanges.ccxt_client import (
     validate_exchange_selection,
 )
 from trading_bot.scanner import MarketScanner
+from trading_bot.research.diagnostics import build_diagnostics
 
 log = logging.getLogger(__name__)
 app = FastAPI(title="Trading Bot — Read-only Research Dashboard", version="0.1.0")
@@ -34,6 +35,7 @@ MARKET_TYPES = {"spot", "swap", "future"}
 TIMEFRAMES = {"5m", "15m", "1h", "4h", "1d"}
 SYMBOL_RE = re.compile(r"^[A-Z0-9._-]+/[A-Z0-9._-]+(?::[A-Z0-9._-]+)?$")
 PAGE = Path(__file__).with_name("index.html")
+DIAGNOSTICS_PAGE = Path(__file__).with_name("diagnostics.html")
 
 
 def _safe(value):
@@ -83,6 +85,11 @@ def _parse_symbols(raw: str) -> list[str]:
 @app.get("/")
 def index():
     return FileResponse(PAGE)
+
+
+@app.get("/diagnostics")
+def diagnostics_page():
+    return FileResponse(DIAGNOSTICS_PAGE)
 
 
 @app.get("/api/health")
@@ -306,4 +313,83 @@ def backtest(
         }),
         "recent_trades": _safe(result.trades.tail(10).to_dict("records")),
         "warning": "Scanner-aligned research. OHLC fills omit funding, liquidation, contract multipliers and exchange-specific execution. Reported derivatives P&L uses synthetic base-quantity sizing.",
+    }
+
+
+@app.get("/api/diagnostics")
+def diagnostics(
+    exchange: str = Query("kucoin", max_length=30),
+    market_type: str = Query("spot"),
+    symbol: str = Query("BTC/USDT", max_length=50),
+    timeframe: str = Query("1h"),
+    equity: float = Query(10000.0, gt=0, le=100_000_000),
+    risk_percent: float = Query(1.0, gt=0, le=5),
+    min_score: int = Query(70, ge=0, le=100),
+    fee_rate: float = Query(0.001, ge=0, le=0.05),
+    slippage_bps: float = Query(5.0, ge=0, le=500),
+):
+    """Read-only diagnostics on the exact saved multi-year dataset.
+
+    Single engine run. Chart filters operate client-side without retesting or
+    parameter optimization. No order execution or external market API calls.
+    """
+    _validate_exchange(exchange, market_type, timeframe)
+    symbol = _validate_symbol(symbol)
+    store = HistoricalDataStore()
+    try:
+        data = store.load(exchange, market_type, symbol, timeframe)
+    except Exception:
+        log.exception("Unable to read archived candles for diagnostics")
+        raise HTTPException(422, "Could not read the selected saved dataset.")
+    if data.empty:
+        expected = store.dataset_path(exchange, market_type, symbol, timeframe)
+        raise HTTPException(
+            422,
+            f"No saved OHLCV dataset for {exchange} {market_type} "
+            f"{symbol} {timeframe}. Expected {expected}. "
+            "Download data or select a saved dataset.",
+        )
+    if len(data) > 150_000:
+        raise HTTPException(
+            422, "Dataset exceeds the 150,000-candle research limit. "
+            "Choose a coarser timeframe or smaller archive.",
+        )
+    quality = validate_ohlcv(data, timeframe=timeframe, min_rows=220)
+    if not quality.valid:
+        raise HTTPException(
+            422, "Invalid history: " + "; ".join(quality.issues)
+        )
+    try:
+        result = run_decision_backtest(
+            data,
+            initial_equity=equity,
+            risk_percent=risk_percent / 100,
+            min_confirmed_score=min_score,
+            fee_rate=fee_rate,
+            slippage_bps=slippage_bps,
+            allow_short=market_type != "spot",
+        )
+        report = build_diagnostics(result)
+    except Exception:
+        log.exception("Diagnostics calculation failed")
+        raise HTTPException(502, "Could not complete diagnostics calculation.")
+    return {
+        **report,
+        "dataset": {
+            "exchange": exchange, "market_type": market_type,
+            "symbol": symbol, "timeframe": timeframe,
+            "rows": len(data),
+            "start": data["timestamp"].iloc[0].isoformat(),
+            "end": data["timestamp"].iloc[-1].isoformat(),
+            "data_quality_warnings": list(quality.warnings),
+        },
+        "assumptions": {
+            "starting_equity": equity,
+            "risk_percent": risk_percent,
+            "min_score": min_score,
+            "fee_rate_per_side": fee_rate,
+            "slippage_bps_per_side": slippage_bps,
+            "shorts_enabled": market_type != "spot",
+        },
+        "live_execution": False,
     }

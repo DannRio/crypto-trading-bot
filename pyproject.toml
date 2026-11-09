@@ -35,7 +35,7 @@ crypto-paper = "trading_bot.paper.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"trading_bot.web" = ["index.html"]
+"trading_bot.web" = ["index.html", "diagnostics.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
