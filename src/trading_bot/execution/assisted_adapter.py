@@ -14,7 +14,7 @@ from trading_bot.execution.gateway import (
     ImmediateFillOrderGateway,
     OrderGateway,
 )
-from trading_bot.execution.ids import client_order_id_for_intent
+from trading_bot.core.order_ids import client_order_id_for_intent
 from trading_bot.execution.manager import OrderManager
 from trading_bot.execution.models import ManagedOrderStatus
 from trading_bot.execution.store import OrderStore
