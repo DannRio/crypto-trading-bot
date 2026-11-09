@@ -128,7 +128,7 @@ def run_decision_backtest(
                     + fee_rate * (executed_entry + stop_execution)
                 )
                 position_size = min(
-                    position["qty"],
+                    setup.position_size,
                     equity * risk_percent / loss_per_unit,
                 ) if valid_stop and loss_per_unit > 0 else 0
                 entry_fee = executed_entry * position_size * fee_rate
