@@ -347,6 +347,12 @@ def run_decision_backtest(
         # Mark the last candle flat after the END_OF_DATA liquidation, if any.
         equity_points[-1]["equity"] = float(equity)
         equity_points[-1]["realized_equity"] = float(equity)
+        # Final settlement fees can create a new trough even if the intrabar
+        # closing mark was higher; include that in maximum drawdown.
+        if peak_equity > 0:
+            max_drawdown = max(
+                max_drawdown, (peak_equity - float(equity)) / peak_equity
+            )
 
     trade_df = pd.DataFrame([asdict(trade) for trade in trades])
     total_trades, win_rate, profit_factor, average_pnl = (
