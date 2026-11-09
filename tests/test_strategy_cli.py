@@ -94,3 +94,53 @@ def test_paper_cli_accepts_continuous_daemon_options():
     assert args.confirm_timeframes == "1h,4h"
     assert args.interval_seconds == 30
     assert args.once is True
+
+
+
+def test_paper_cli_accepts_portfolio_risk_v2_options():
+    args = paper_parser().parse_args(
+        [
+            "daemon",
+            "--max-open-risk-percent",
+            "2.5",
+            "--max-gross-notional-percent",
+            "150",
+            "--max-correlated-risk-percent",
+            "1.5",
+            "--correlation-threshold",
+            "0.8",
+            "--max-daily-loss-percent",
+            "1.5",
+            "--max-weekly-loss-percent",
+            "4",
+            "--max-drawdown-percent",
+            "8",
+            "--correlation-lookback",
+            "200",
+            "--min-correlation-samples",
+            "100",
+        ]
+    )
+
+    assert args.max_open_risk_percent == 2.5
+    assert args.max_gross_notional_percent == 150
+    assert args.max_correlated_risk_percent == 1.5
+    assert args.correlation_threshold == 0.8
+    assert args.max_daily_loss_percent == 1.5
+    assert args.max_drawdown_percent == 8
+
+
+def test_paper_cli_accepts_guarded_risk_reset_command():
+    args = paper_parser().parse_args(
+        [
+            "risk-reset",
+            "--confirm",
+            "RESET",
+            "--max-state-age-minutes",
+            "5",
+        ]
+    )
+
+    assert args.command == "risk-reset"
+    assert args.confirm == "RESET"
+    assert args.max_state_age_minutes == 5
