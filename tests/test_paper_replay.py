@@ -40,5 +40,9 @@ def test_paper_replay_runs_shared_decision_engine():
     )
 
     assert len(broker.completed_trades) > 0
+    assert {
+        trade.strategy
+        for trade in broker.completed_trades
+    } == {"trend_continuation"}
     assert broker.snapshot().open_positions == 0
     assert broker.snapshot().pending_orders == 0
