@@ -19,6 +19,8 @@ def run_batch_research(
     min_confirmed_score: int = 70,
     fee_rate: float = 0.001,
     slippage_bps: float = 5.0,
+    allow_short: bool | None = None,
+    min_history_days: float = 0,
 ) -> tuple[pd.DataFrame, dict[tuple[str, str, str, str], object]]:
     store = store or HistoricalDataStore()
     summary_rows: list[dict] = []
@@ -55,6 +57,23 @@ def run_batch_research(
             summary_rows.append(row)
             continue
 
+        span_days = (
+            (data["timestamp"].max() - data["timestamp"].min()).total_seconds()
+            / 86_400
+        )
+        row["span_days"] = span_days
+        row["missing_intervals"] = quality.missing_intervals
+        if span_days < min_history_days:
+            row.update({
+                "status": "INSUFFICIENT_HISTORY",
+                "error": (
+                    f"Only {span_days:.1f} days available; "
+                    f"at least {min_history_days:.1f} required."
+                ),
+            })
+            summary_rows.append(row)
+            continue
+
         result = run_decision_backtest(
             data=data,
             initial_equity=initial_equity,
@@ -62,7 +81,10 @@ def run_batch_research(
             min_confirmed_score=min_confirmed_score,
             fee_rate=fee_rate,
             slippage_bps=slippage_bps,
-            allow_short=spec.market_type != "spot",
+            allow_short=(
+                spec.market_type != "spot"
+                and (allow_short is None or allow_short)
+            ),
         )
 
         trades = result.trades
@@ -79,7 +101,7 @@ def run_batch_research(
 
         row.update(
             {
-                "status": "OK",
+                "status": "GAPS_PRESENT" if quality.missing_intervals else "OK",
                 "start": data["timestamp"].min(),
                 "end": data["timestamp"].max(),
                 "trades": result.total_trades,
