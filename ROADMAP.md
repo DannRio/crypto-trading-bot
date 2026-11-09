@@ -58,6 +58,7 @@
 - [x] Multiple-asset batch research
 - [x] Train / validation / out-of-sample testing
 - [x] Fixed-parameter walk-forward stability testing
+- [x] Train-only parameter experiment registry
 - [ ] Per-window parameter optimization
 
 ## Phase 7 — Market Scanner
