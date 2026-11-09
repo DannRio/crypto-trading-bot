@@ -1,7 +1,7 @@
 import pandas as pd
 
 from trading_bot.backtesting import run_decision_backtest
-from trading_bot.data import HistoricalDataStore, validate_ohlcv
+from trading_bot.data import HistoricalDataStore, timeframe_to_milliseconds, validate_ohlcv
 from trading_bot.research.models import DatasetSpec
 
 
@@ -57,10 +57,12 @@ def run_batch_research(
             summary_rows.append(row)
             continue
 
+        # Include the final candle's own duration: a complete daily archive
+        # otherwise appears one calendar day shorter than its actual range.
         span_days = (
             (data["timestamp"].max() - data["timestamp"].min()).total_seconds()
-            / 86_400
-        )
+            + timeframe_to_milliseconds(spec.timeframe) / 1000
+        ) / 86_400
         row["span_days"] = span_days
         row["missing_intervals"] = quality.missing_intervals
         if span_days < min_history_days:
