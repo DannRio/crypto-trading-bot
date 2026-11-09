@@ -48,6 +48,8 @@ class PaperJournal:
             CREATE TABLE IF NOT EXISTS paper_risk_state (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 peak_equity REAL NOT NULL,
+                last_equity REAL NOT NULL,
+                evaluated_at TEXT NOT NULL,
                 day_key TEXT NOT NULL,
                 day_start_equity REAL NOT NULL,
                 week_key TEXT NOT NULL,
@@ -268,6 +270,8 @@ class PaperJournal:
             """
             SELECT
                 peak_equity,
+                last_equity,
+                evaluated_at,
                 day_key,
                 day_start_equity,
                 week_key,
@@ -283,18 +287,20 @@ class PaperJournal:
             return None
 
         halted_at = (
-            pd.Timestamp(row[7])
-            if row[7] is not None
+            pd.Timestamp(row[9])
+            if row[9] is not None
             else None
         )
         return PortfolioRiskState(
             peak_equity=float(row[0]),
-            day_key=str(row[1]),
-            day_start_equity=float(row[2]),
-            week_key=str(row[3]),
-            week_start_equity=float(row[4]),
-            halted=bool(row[5]),
-            halt_reason=str(row[6]),
+            last_equity=float(row[1]),
+            evaluated_at=pd.Timestamp(row[2]),
+            day_key=str(row[3]),
+            day_start_equity=float(row[4]),
+            week_key=str(row[5]),
+            week_start_equity=float(row[6]),
+            halted=bool(row[7]),
+            halt_reason=str(row[8]),
             halted_at=halted_at,
         )
 
@@ -307,6 +313,8 @@ class PaperJournal:
             INSERT INTO paper_risk_state (
                 id,
                 peak_equity,
+                last_equity,
+                evaluated_at,
                 day_key,
                 day_start_equity,
                 week_key,
@@ -316,9 +324,11 @@ class PaperJournal:
                 halted_at,
                 updated_at
             )
-            VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 peak_equity = excluded.peak_equity,
+                last_equity = excluded.last_equity,
+                evaluated_at = excluded.evaluated_at,
                 day_key = excluded.day_key,
                 day_start_equity = excluded.day_start_equity,
                 week_key = excluded.week_key,
@@ -330,6 +340,8 @@ class PaperJournal:
             """,
             (
                 state.peak_equity,
+                state.last_equity,
+                self._timestamp(state.evaluated_at),
                 state.day_key,
                 state.day_start_equity,
                 state.week_key,
