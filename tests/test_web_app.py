@@ -31,7 +31,8 @@ def test_health_confirms_orders_disabled():
 def test_dashboard_is_served():
     response = client.get("/")
     assert response.status_code == 200
-    assert "READ ONLY" in response.text
+    assert "DRY RUN" in response.text
+    assert "LIVE ORDERS DISABLED" in response.text
 
 
 def test_reject_untrusted_market_inputs():
