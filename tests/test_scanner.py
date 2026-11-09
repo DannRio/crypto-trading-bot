@@ -84,3 +84,18 @@ def test_cli_parser_accepts_alert_options():
     assert args.alert_forming is True
     assert args.alert_cooldown_minutes == 30
     assert args.alert_jsonl == "data/alerts/test.jsonl"
+
+
+
+def test_cli_parser_accepts_strategy_candidates():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--strategies",
+            "trend_continuation,breakout_retest",
+        ]
+    )
+
+    assert args.strategies == (
+        "trend_continuation,breakout_retest"
+    )
