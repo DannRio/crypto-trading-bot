@@ -476,3 +476,27 @@ def test_assisted_reject_prevents_later_approval(
         json={"actor": "Danny"},
     )
     assert approve.status_code == 409
+
+
+
+def test_live_execution_status_endpoint_is_read_only(
+    monkeypatch,
+    tmp_path,
+):
+    live_db = tmp_path / "live_orders.db"
+    monkeypatch.setattr(
+        web,
+        "LIVE_ORDER_DB_PATH",
+        live_db,
+    )
+
+    response = client.get(
+        "/api/execution/status"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "LIVE_OPERATOR_CLI_ONLY"
+    assert body["web_live_submission"] is False
+    assert body["control"]["armed"] is False
+    assert body["control"]["halted"] is False
+    assert body["context"] is None
