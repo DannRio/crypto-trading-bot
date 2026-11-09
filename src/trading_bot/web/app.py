@@ -372,6 +372,45 @@ def scan(
     }
 
 
+
+
+@app.get("/api/assisted/intents")
+def assisted_intents(
+    status: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+):
+    store = IntentStore(ASSISTED_DB_PATH)
+    try:
+        statuses = None
+        if status:
+            try:
+                statuses = (IntentStatus(status.upper()),)
+            except ValueError as exc:
+                raise HTTPException(
+                    422,
+                    "Unsupported assisted intent status.",
+                ) from exc
+
+        intents = store.list(
+            statuses=statuses,
+            limit=limit,
+        )
+        return {
+            "mode": "DRY_RUN",
+            "live_execution": False,
+            "database": str(ASSISTED_DB_PATH),
+            "intents": _safe(intents),
+            "decisions": _safe(
+                store.decisions(limit=limit)
+            ),
+            "receipts": _safe(
+                store.execution_receipts(limit=limit)
+            ),
+        }
+    finally:
+        store.close()
+
+
 @app.get("/api/backtest")
 def backtest(
     exchange: str = Query("kraken"),
