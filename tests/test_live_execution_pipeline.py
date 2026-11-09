@@ -79,7 +79,11 @@ class FakeLiveExchange:
 
     def feature_value(self, symbol, method, feature):
         assert method == "createOrder"
-        return feature in {"stopLoss", "takeProfit"}
+        return feature in {
+            "stopLoss",
+            "takeProfit",
+            "clientOrderId",
+        }
 
     def create_order(
         self,
