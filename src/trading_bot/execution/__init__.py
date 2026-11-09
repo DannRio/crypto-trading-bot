@@ -1,4 +1,8 @@
+from trading_bot.execution.assisted_adapter import (
+    ManagedDryRunBrokerAdapter,
+)
 from trading_bot.execution.gateway import (
+    ImmediateFillOrderGateway,
     InMemoryOrderGateway,
     OrderGateway,
 )
@@ -14,7 +18,9 @@ from trading_bot.execution.store import OrderStore
 
 __all__ = [
     "ExchangeOrderSnapshot",
+    "ImmediateFillOrderGateway",
     "InMemoryOrderGateway",
+    "ManagedDryRunBrokerAdapter",
     "ManagedOrder",
     "ManagedOrderStatus",
     "OrderEvent",

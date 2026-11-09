@@ -7,6 +7,10 @@ from fastapi.testclient import TestClient
 
 from trading_bot.analysis import MarketStructure
 from trading_bot.core.enums import MarketRegime, Signal, SetupStatus
+from trading_bot.execution import (
+    ManagedOrderStatus,
+    OrderStore,
+)
 from trading_bot.paper import PaperJournal
 from trading_bot.planning import TradeSetup
 from trading_bot.scanner import (
@@ -362,6 +366,11 @@ def test_assisted_stage_approve_and_list_are_dry_run(
         "ASSISTED_DB_PATH",
         tmp_path / "assisted.db",
     )
+    monkeypatch.setattr(
+        web,
+        "ORDER_DB_PATH",
+        tmp_path / "orders.db",
+    )
 
     stage = client.post(
         "/api/assisted/stage",
@@ -396,8 +405,26 @@ def test_assisted_stage_approve_and_list_are_dry_run(
     approved = approve.json()
     assert approved["live_execution"] is False
     assert approved["intent"]["status"] == "EXECUTED"
-    assert approved["receipt"]["mode"] == "DRY_RUN"
-    assert approved["receipt"]["external_order_id"] is None
+    assert approved["mode"] == "MANAGED_DRY_RUN"
+    assert approved["receipt"]["mode"] == "MANAGED_DRY_RUN"
+    assert approved["receipt"]["external_order_id"] is not None
+
+    order_store = OrderStore(tmp_path / "orders.db")
+    managed = order_store.list_orders()
+    assert len(managed) == 1
+    assert managed[0].intent_id == intent_id
+    assert managed[0].status == ManagedOrderStatus.FILLED
+    assert managed[0].external_order_id == approved["receipt"]["external_order_id"]
+    order_store.close()
+
+    order_status = client.get("/api/orders/status")
+    assert order_status.status_code == 200
+    order_body = order_status.json()
+    assert order_body["mode"] == "MANAGED_DRY_RUN"
+    assert order_body["live_execution"] is False
+    assert len(order_body["orders"]) == 1
+    assert order_body["orders"][0]["status"] == "FILLED"
+    assert order_body["orders"][0]["intent_id"] == intent_id
 
     queue = client.get("/api/assisted/intents")
     assert queue.status_code == 200

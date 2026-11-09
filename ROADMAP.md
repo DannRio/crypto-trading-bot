@@ -100,7 +100,7 @@
 - [x] Idempotent client-order identity
 - [x] Ambiguous submission -> reconcile-before-retry
 - [x] Partial-fill and cancellation state handling
-- [ ] Connect assisted approvals to managed orders
+- [x] Connect assisted approvals to managed orders
 - [ ] Live exchange order management
 
 ## Phase 10 — Automated Execution

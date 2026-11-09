@@ -155,3 +155,26 @@ class InMemoryOrderGateway(OrderGateway):
             external_order_id
         ] = updated
         return updated
+
+
+
+class ImmediateFillOrderGateway(InMemoryOrderGateway):
+    """No-network gateway that immediately fills accepted orders.
+
+    Useful for the assisted dashboard because terminal dry-run orders do not
+    require synthetic exchange state to survive a process restart.
+    """
+
+    def submit(
+        self,
+        order: PreparedOrder,
+    ) -> ExchangeOrderSnapshot:
+        snapshot = super().submit(order)
+        if snapshot.status == ManagedOrderStatus.FILLED:
+            return snapshot
+        return self.set_fill(
+            snapshot.external_order_id,
+            filled_amount=order.amount,
+            average_price=order.price,
+            total_amount=order.amount,
+        )

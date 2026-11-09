@@ -431,6 +431,26 @@ class OrderStore:
             for row in rows
         ]
 
+    def list_orders(
+        self,
+        limit: int = 100,
+    ) -> list[ManagedOrder]:
+        if limit <= 0:
+            raise ValueError("limit must be positive.")
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM managed_orders
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [
+            self._row_to_order(row)
+            for row in rows
+        ]
+
     def active_orders(
         self,
     ) -> list[ManagedOrder]:

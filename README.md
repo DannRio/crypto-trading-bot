@@ -560,3 +560,22 @@ data/orders/orders.db
 and is ignored by Git.
 
 The current gateway is `InMemoryOrderGateway`, which never contacts an exchange. The next integration step is to route approved assisted intents through this manager, then add a CCXT order gateway with idempotent submission/reconciliation before enabling any live order call.
+
+
+## Assisted managed orders
+
+Version 0.15 connects the dry-run assisted approval workflow to the persistent order manager.
+
+When an intent is approved in the dashboard:
+
+1. the immutable intent is approved and audited;
+2. a `PreparedOrder` is created using the approved entry and position size;
+3. the order is persisted in `data/orders/orders.db`;
+4. the order passes through the normalized order state machine;
+5. the current `ImmediateFillOrderGateway` fills it locally without network access;
+6. the assisted execution receipt records the managed dry-run external id;
+7. the dashboard exposes the resulting managed order.
+
+This makes the dry-run product exercise the same persistence/idempotency boundary that future exchange execution will use, instead of bypassing order management.
+
+The current product still does **not** contact an exchange for order placement. The immediate-fill gateway is a local simulation and the authenticated CCXT adapter's `execute()` method remains hard-disabled.
