@@ -151,7 +151,8 @@ def test_authenticated_adapter_prepares_precision_checked_order():
     assert prepared.order_type == "limit"
     assert prepared.amount == pytest.approx(1.235)
     assert prepared.price == pytest.approx(100.13)
-    assert prepared.client_order_id == "intent-1"
+    assert prepared.client_order_id.startswith("tb-")
+    assert prepared.client_order_id != "intent-1"
     assert adapter.capabilities.live_execution is False
 
 
