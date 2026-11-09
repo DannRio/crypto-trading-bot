@@ -115,6 +115,7 @@ class ReconciliationService:
                 f"{type(exc).__name__}: {exc}"
             )
 
+        orphan_snapshots = []
         for snapshot in exchange_open:
             client_id = snapshot.client_order_id
             if not is_bot_client_order_id(
@@ -129,23 +130,7 @@ class ReconciliationService:
                 is None
             ):
                 orphaned_ids.append(client_id)
-                if cancel_orphans:
-                    try:
-                        if not snapshot.symbol:
-                            raise RuntimeError(
-                                "Orphaned order response has no symbol; "
-                                "cannot cancel it safely."
-                            )
-                        self.gateway.cancel(
-                            snapshot.external_order_id,
-                            snapshot.symbol,
-                        )
-                    except Exception as exc:
-                        errors.append(
-                            "orphan cancel "
-                            f"{snapshot.external_order_id}: "
-                            f"{type(exc).__name__}: {exc}"
-                        )
+                orphan_snapshots.append(snapshot)
 
         if (
             orphaned_ids
@@ -161,6 +146,25 @@ class ReconciliationService:
                 ),
                 now=now,
             )
+
+        if cancel_orphans:
+            for snapshot in orphan_snapshots:
+                try:
+                    if not snapshot.symbol:
+                        raise RuntimeError(
+                            "Orphaned order response has no symbol; "
+                            "cannot cancel it safely."
+                        )
+                    self.gateway.cancel(
+                        snapshot.external_order_id,
+                        snapshot.symbol,
+                    )
+                except Exception as exc:
+                    errors.append(
+                        "orphan cancel "
+                        f"{snapshot.external_order_id}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
 
         return ReconciliationReport(
             local_checked=checked,
