@@ -137,6 +137,7 @@ class CCXTOrderGateway(OrderGateway):
         *,
         guard: LiveExecutionGuard | None = None,
         lookup_limit: int = 100,
+        allowed_submit_market_types: tuple[str, ...] = ("spot",),
     ):
         if lookup_limit <= 0:
             raise ValueError(
@@ -145,6 +146,9 @@ class CCXTOrderGateway(OrderGateway):
         self.exchange = exchange
         self.guard = guard
         self.lookup_limit = lookup_limit
+        self.allowed_submit_market_types = tuple(
+            allowed_submit_market_types
+        )
 
     def _supports(
         self,
@@ -161,6 +165,13 @@ class CCXTOrderGateway(OrderGateway):
         self,
         order: PreparedOrder,
     ) -> ExchangeOrderSnapshot:
+        if order.market_type not in self.allowed_submit_market_types:
+            raise RuntimeError(
+                "Live submission for market type "
+                f"{order.market_type} is disabled until explicit "
+                "leverage, margin-mode and position-mode controls "
+                "are implemented."
+            )
         if self.guard is None:
             raise RuntimeError(
                 "Live order submission has no execution guard."
