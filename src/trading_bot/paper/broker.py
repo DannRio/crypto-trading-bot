@@ -1,3 +1,4 @@
+from dataclasses import replace
 from uuid import uuid4
 
 import pandas as pd
@@ -83,6 +84,7 @@ class PaperBroker:
 
         self.realized_net_pnl = 0.0
         self.fees_paid = 0.0
+        self.historical_peak_equity = starting_equity
         self.risk_state: PortfolioRiskState | None = (
             journal.load_risk_state()
             if journal is not None
@@ -102,9 +104,22 @@ class PaperBroker:
         self,
         timestamp,
     ) -> RiskStateUpdate:
+        account_equity = self.account_equity()
+        state = self.risk_state
+        if state is None:
+            state = self.risk_manager.initialize_state(
+                account_equity=account_equity,
+                timestamp=timestamp,
+            )
+            if self.historical_peak_equity > state.peak_equity:
+                state = replace(
+                    state,
+                    peak_equity=self.historical_peak_equity,
+                )
+
         update = self.risk_manager.update_state(
-            state=self.risk_state,
-            account_equity=self.account_equity(),
+            state=state,
+            account_equity=account_equity,
             timestamp=timestamp,
         )
         self.risk_state = update.state
@@ -216,6 +231,15 @@ class PaperBroker:
             if not trades.empty
             else 0.0
         )
+        realized_curve = self.starting_equity
+        self.historical_peak_equity = self.starting_equity
+        if not trades.empty:
+            for pnl in trades["net_pnl"].astype(float):
+                realized_curve += pnl
+                self.historical_peak_equity = max(
+                    self.historical_peak_equity,
+                    realized_curve,
+                )
         self.fees_paid = (
             float(trades["fees"].sum())
             if not trades.empty
