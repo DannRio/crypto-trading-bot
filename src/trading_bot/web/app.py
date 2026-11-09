@@ -27,7 +27,11 @@ from trading_bot.execution import (
     ManagedDryRunBrokerAdapter,
     OrderStore,
 )
-from trading_bot.data import get_ohlcv, validate_ohlcv
+from trading_bot.data import (
+    HistoricalDataStore,
+    get_ohlcv,
+    validate_ohlcv,
+)
 from trading_bot.paper import PaperJournal
 from trading_bot.scanner import (
     DynamicMarketUniverse,
@@ -44,6 +48,12 @@ MARKET_TYPES = {"spot", "swap", "future"}
 TIMEFRAMES = {"5m", "15m", "1h", "4h", "1d"}
 SYMBOL_RE = re.compile(r"^[A-Z0-9._-]+/[A-Z0-9._-]+(?::[A-Z0-9._-]+)?$")
 PAGE = Path(__file__).with_name("index.html")
+HISTORY_ROOT = Path(
+    os.getenv(
+        "TRADING_HISTORY_ROOT",
+        "data/history",
+    )
+)
 PAPER_JOURNAL_PATH = Path(
     os.getenv(
         "TRADING_PAPER_JOURNAL",
@@ -659,6 +669,9 @@ def backtest(
     market_type: str = Query("spot"),
     symbol: str = Query("BTC/USD", max_length=50),
     timeframe: str = Query("1h"),
+    data_source: str = Query("local", pattern="^(local|live)$"),
+    start: str | None = Query(None, max_length=32),
+    end: str | None = Query(None, max_length=32),
     limit: int = Query(720, ge=250, le=1000),
     equity: float = Query(10000.0, gt=0, le=100_000_000),
     risk_percent: float = Query(1.0, gt=0, le=5),
@@ -670,16 +683,86 @@ def backtest(
     _validate_exchange(exchange, market_type, timeframe)
     symbol = _validate_symbol(symbol)
     strategy_names = _parse_strategies(strategies)
+
     try:
-        candles = get_ohlcv(
-            symbol=symbol, timeframe=timeframe, limit=limit,
-            exchange_id=exchange, market_type=market_type,
+        if data_source == "local":
+            store = HistoricalDataStore(HISTORY_ROOT)
+            candles = store.load(
+                exchange,
+                market_type,
+                symbol,
+                timeframe,
+            )
+            if candles.empty:
+                raise HTTPException(
+                    404,
+                    "No saved historical dataset matches "
+                    f"{exchange} · {market_type} · {symbol} · {timeframe}.",
+                )
+
+            filtered = candles.copy()
+            filtered["timestamp"] = pd.to_datetime(
+                filtered["timestamp"],
+                utc=True,
+            )
+
+            if start:
+                start_ts = pd.Timestamp(start)
+                start_ts = (
+                    start_ts.tz_localize("UTC")
+                    if start_ts.tzinfo is None
+                    else start_ts.tz_convert("UTC")
+                )
+                filtered = filtered[
+                    filtered["timestamp"] >= start_ts
+                ]
+
+            if end:
+                end_ts = pd.Timestamp(end)
+                end_ts = (
+                    end_ts.tz_localize("UTC")
+                    if end_ts.tzinfo is None
+                    else end_ts.tz_convert("UTC")
+                )
+                # A date-only end value includes the full selected day.
+                if len(end) == 10:
+                    end_ts = end_ts + pd.Timedelta(days=1)
+                filtered = filtered[
+                    filtered["timestamp"] < end_ts
+                ]
+
+            closed = filtered.reset_index(drop=True)
+            source_path = str(
+                store.dataset_path(
+                    exchange,
+                    market_type,
+                    symbol,
+                    timeframe,
+                )
+            )
+        else:
+            candles = get_ohlcv(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=limit,
+                exchange_id=exchange,
+                market_type=market_type,
+            )
+            # Conservatively omit the still-open exchange candle.
+            closed = candles.iloc[:-1].copy()
+            source_path = None
+
+        quality = validate_ohlcv(
+            closed,
+            timeframe=timeframe,
+            min_rows=220,
         )
-        # Consistent with the scanner: conservatively omit the final candle.
-        closed = candles.iloc[:-1].copy()
-        quality = validate_ohlcv(closed, timeframe=timeframe, min_rows=220)
         if not quality.valid:
-            raise HTTPException(422, "Not enough valid closed candles for backtesting.")
+            raise HTTPException(
+                422,
+                "Not enough valid closed candles for backtesting.",
+            )
+
         result = run_decision_backtest(
             closed,
             initial_equity=equity,
@@ -692,17 +775,45 @@ def backtest(
         )
     except HTTPException:
         raise
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            422,
+            f"Invalid backtest selection: {exc}",
+        ) from exc
     except Exception:
         log.exception("Backtest failed")
-        raise HTTPException(502, "Market data or backtesting failed.")
+        raise HTTPException(
+            502,
+            "Market data or backtesting failed.",
+        )
+
+    data_start = (
+        closed["timestamp"].min()
+        if not closed.empty
+        else None
+    )
+    data_end = (
+        closed["timestamp"].max()
+        if not closed.empty
+        else None
+    )
+
     return {
-        "symbol": symbol, "exchange": exchange, "timeframe": timeframe,
+        "symbol": symbol,
+        "exchange": exchange,
+        "market_type": market_type,
+        "timeframe": timeframe,
+        "data_source": data_source,
+        "source_path": source_path,
         "data_rows": len(closed),
+        "data_start": _safe(data_start),
+        "data_end": _safe(data_end),
         "strategies": list(strategy_names),
         "assumptions": {
             "fee_rate_per_side": fee_rate,
             "slippage_bps_per_side": slippage_bps,
             "min_score": min_score,
+            "single_timeframe_only": True,
         },
         "metrics": _safe({
             "initial_equity": result.initial_equity,
@@ -714,6 +825,13 @@ def backtest(
             "profit_factor": result.profit_factor,
             "average_pnl": result.average_pnl,
         }),
-        "recent_trades": _safe(result.trades.tail(10).to_dict("records")),
-        "warning": "Quick research only. Uses the same decision rules as the scanner; OHLC fills still omit funding, liquidation and exchange-specific matching.",
+        "recent_trades": _safe(
+            result.trades.tail(10).to_dict("records")
+        ),
+        "warning": (
+            "This historical backtest is single-timeframe. "
+            "Scanner higher-timeframe confirmation and lower-timeframe "
+            "entry-trigger filters are not applied by this endpoint yet."
+        ),
     }
+
