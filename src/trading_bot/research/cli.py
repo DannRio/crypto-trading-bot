@@ -1,4 +1,5 @@
 import argparse
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -9,6 +10,7 @@ from trading_bot.research.evaluation import (
     run_out_of_sample_evaluation,
     run_walk_forward_evaluation,
 )
+from trading_bot.research.experiments import run_parameter_experiments
 from trading_bot.research.models import DatasetSpec
 
 
@@ -74,6 +76,23 @@ def build_parser() -> argparse.ArgumentParser:
     walk.add_argument("--test-bars", type=int, required=True)
     walk.add_argument("--step-bars", type=int)
     walk.add_argument("--export")
+
+    experiment = subparsers.add_parser("experiment")
+    _add_dataset_args(experiment)
+    _add_backtest_args(experiment)
+    experiment.add_argument("--train-start")
+    experiment.add_argument("--train-end", required=True)
+    experiment.add_argument(
+        "--grid",
+        required=True,
+        help="Path to a JSON parameter grid.",
+    )
+    experiment.add_argument(
+        "--max-combinations",
+        type=int,
+        default=500,
+    )
+    experiment.add_argument("--export")
 
     return parser
 
@@ -277,6 +296,92 @@ def _walk_forward(args) -> int:
     return 0
 
 
+
+
+def _experiment(args) -> int:
+    _validate_risk(args)
+    grid_path = Path(args.grid)
+    try:
+        grid = json.loads(
+            grid_path.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(
+            f"Could not load parameter grid {grid_path}: {exc}"
+        ) from exc
+
+    if not isinstance(grid, dict):
+        raise SystemExit("Parameter grid JSON must be an object.")
+
+    store = HistoricalDataStore(args.root)
+    frames: list[pd.DataFrame] = []
+
+    for spec in _specs(args):
+        data = store.load(
+            spec.exchange_id,
+            spec.market_type,
+            spec.symbol,
+            spec.timeframe,
+        )
+        if data.empty:
+            print(
+                f"Missing dataset: {spec.symbol} {spec.timeframe}"
+            )
+            continue
+
+        try:
+            results = run_parameter_experiments(
+                data=data,
+                grid=grid,
+                train_start=args.train_start,
+                train_end=args.train_end,
+                strategy_names=tuple(
+                    _csv_values(args.strategies)
+                ),
+                initial_equity=args.equity,
+                risk_percent=args.risk_percent / 100,
+                fee_rate=args.fee_rate,
+                slippage_bps=args.slippage_bps,
+                allow_short=args.market_type != "spot",
+                base_min_confirmed_score=args.min_score,
+                max_combinations=args.max_combinations,
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+
+        results.insert(0, "timeframe", spec.timeframe)
+        results.insert(0, "symbol", spec.symbol)
+        results.insert(0, "market_type", spec.market_type)
+        results.insert(0, "exchange", spec.exchange_id)
+        frames.append(results)
+
+    combined = (
+        pd.concat(frames, ignore_index=True)
+        if frames
+        else pd.DataFrame()
+    )
+    if combined.empty:
+        print("No parameter experiment results.")
+        return 0
+
+    display = [
+        "exchange",
+        "symbol",
+        "timeframe",
+        "experiment_id",
+        "strategies",
+        "parameters_json",
+        "trades",
+        "return_pct",
+        "max_drawdown_pct",
+        "profit_factor",
+        "average_r",
+    ]
+    print(combined[display].to_string(index=False))
+    _export(combined, args.export)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -288,6 +393,8 @@ def main(argv: list[str] | None = None) -> int:
         return _oos(args)
     if args.command == "walk-forward":
         return _walk_forward(args)
+    if args.command == "experiment":
+        return _experiment(args)
 
     raise SystemExit("Unknown command.")
 
