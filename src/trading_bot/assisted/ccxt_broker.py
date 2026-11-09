@@ -13,6 +13,7 @@ from trading_bot.assisted.models import (
     PreparedOrder,
     TradeIntent,
 )
+from trading_bot.execution.ids import client_order_id_for_intent
 
 
 class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
@@ -29,6 +30,7 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
         market_type: str,
         credential_provider: EnvironmentCredentialProvider | None = None,
         exchange_factory: Callable[[dict], object] | None = None,
+        require_attached_protection: bool = False,
     ):
         self.exchange_id = exchange_id
         self.market_type = market_type
@@ -43,6 +45,9 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
             exchange_factory
         )
         self._markets: dict | None = None
+        self.require_attached_protection = (
+            require_attached_protection
+        )
 
         self._capabilities = BrokerCapabilities(
             broker_id=f"ccxt:{exchange_id}",
@@ -160,6 +165,88 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
                 f"{name} {value} exceeds exchange maximum {maximum}."
             )
 
+    def _feature_value(
+        self,
+        symbol: str,
+        feature: str,
+    ):
+        method = getattr(
+            self.exchange,
+            "feature_value",
+            None,
+        )
+        if callable(method):
+            return method(
+                symbol,
+                "createOrder",
+                feature,
+            )
+
+        camel = getattr(
+            self.exchange,
+            "featureValue",
+            None,
+        )
+        if callable(camel):
+            return camel(
+                symbol,
+                "createOrder",
+                feature,
+            )
+
+        return None
+
+    def _protective_params(
+        self,
+        intent: TradeIntent,
+    ) -> dict:
+        if not self.require_attached_protection:
+            return {}
+
+        stop_loss = intent.plan.get(
+            "stop_loss"
+        )
+        take_profit = intent.plan.get(
+            "take_profit_2"
+        )
+        if stop_loss is None or take_profit is None:
+            raise ValueError(
+                "Live order preparation requires both stop_loss "
+                "and take_profit_2 in the immutable trade plan."
+            )
+
+        stop_supported = self._feature_value(
+            intent.symbol,
+            "stopLoss",
+        )
+        take_supported = self._feature_value(
+            intent.symbol,
+            "takeProfit",
+        )
+        if stop_supported is not True:
+            raise RuntimeError(
+                "Exchange does not advertise attached stop-loss "
+                f"support for {intent.symbol}."
+            )
+        if take_supported is not True:
+            raise RuntimeError(
+                "Exchange does not advertise attached take-profit "
+                f"support for {intent.symbol}."
+            )
+
+        return {
+            "stopLoss": {
+                "triggerPrice": float(
+                    stop_loss
+                ),
+            },
+            "takeProfit": {
+                "triggerPrice": float(
+                    take_profit
+                ),
+            },
+        }
+
     def prepare_order(
         self,
         intent: TradeIntent,
@@ -243,7 +330,14 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
             ),
             amount=amount,
             price=price,
-            client_order_id=intent.intent_id,
+            client_order_id=(
+                client_order_id_for_intent(
+                    intent.intent_id
+                )
+            ),
+            params=self._protective_params(
+                intent
+            ),
         )
 
     def execute(
