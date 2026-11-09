@@ -8,6 +8,7 @@ from trading_bot.backtesting.metrics import (
     calculate_trade_metrics,
 )
 from trading_bot.backtesting.models import BacktestResult, CompletedTrade
+from trading_bot.backtesting.timeframe_gates import HistoricalTimeframeGates
 from trading_bot.core.enums import Signal, SetupStatus
 from trading_bot.decision import DecisionEngine
 from trading_bot.planning import TradePlanConfig
@@ -81,6 +82,10 @@ def run_decision_backtest(
     strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES,
     strategy_parameters: dict[str, dict] | None = None,
     trade_plan_config: TradePlanConfig | None = None,
+    primary_timeframe: str = "1h",
+    confirmation_timeframes: tuple[str, ...] = (),
+    entry_timeframe: str | None = None,
+    secondary_data: dict[str, pd.DataFrame] | None = None,
 ) -> BacktestResult:
     """Backtest the same scored decision path used by MarketScanner.
 
@@ -97,6 +102,12 @@ def run_decision_backtest(
     if decision_lookback < 21:
         raise ValueError("decision_lookback must be at least 21 candles.")
 
+    historical_gates = HistoricalTimeframeGates(
+        primary_timeframe=primary_timeframe,
+        secondary_data=secondary_data or {},
+        confirmation_timeframes=confirmation_timeframes,
+        entry_timeframe=entry_timeframe,
+    )
     prepared = add_indicators(data.copy())
     equity = initial_equity
     peak_equity = equity
@@ -111,7 +122,7 @@ def run_decision_backtest(
         history = prepared.iloc[
             max(0, index - decision_lookback + 1): index + 1
         ]
-        return DecisionEngine(
+        decision = DecisionEngine(
             account_equity=equity,
             risk_percent=risk_percent,
             min_confirmed_score=min_confirmed_score,
@@ -119,6 +130,7 @@ def run_decision_backtest(
             strategy_parameters=strategy_parameters,
             trade_plan_config=trade_plan_config,
         ).evaluate(history)
+        return historical_gates.apply(decision, prepared.iloc[index]["timestamp"])
 
     def close_position(
         candle,
