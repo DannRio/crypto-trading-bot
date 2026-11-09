@@ -247,6 +247,89 @@ def test_local_backtest_date_range_filters_saved_dataset(
     assert body["data_rows"] == 24 * 11
 
 
+def test_local_backtest_finds_legacy_cwd_history(
+    monkeypatch,
+    tmp_path,
+):
+    history_root = tmp_path / "legacy" / "data" / "history"
+    n = 260
+    base = 100 + np.linspace(0, 10, n)
+    candles = pd.DataFrame({
+        "timestamp": pd.date_range(
+            "2024-01-01",
+            periods=n,
+            freq="h",
+            tz="UTC",
+        ),
+        "open": base - 0.2,
+        "high": base + 1.0,
+        "low": base - 1.0,
+        "close": base,
+        "volume": np.full(n, 500.0),
+    })
+    web.HistoricalDataStore(history_root).upsert(
+        "kucoin",
+        "spot",
+        "BTC/USDT",
+        "1h",
+        candles,
+    )
+
+    monkeypatch.setattr(
+        web,
+        "HISTORY_ROOT",
+        tmp_path / "missing-project-history",
+    )
+    monkeypatch.chdir(tmp_path / "legacy")
+
+    response = client.get(
+        "/api/backtest",
+        params={
+            "exchange": "kucoin",
+            "market_type": "spot",
+            "symbol": "BTC/USDT",
+            "timeframe": "1h",
+            "data_source": "local",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["data_rows"] == n
+    assert body["source_path"].endswith(
+        "data/history/kucoin/spot/BTC_USDT/1h.csv"
+    )
+
+
+def test_missing_local_history_reports_checked_paths(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        web,
+        "HISTORY_ROOT",
+        tmp_path / "project-history",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    response = client.get(
+        "/api/backtest",
+        params={
+            "exchange": "kucoin",
+            "market_type": "spot",
+            "symbol": "BTC/USDT",
+            "timeframe": "1h",
+            "data_source": "local",
+        },
+    )
+
+    assert response.status_code == 404
+    detail = response.json()["detail"]
+    assert "Checked:" in detail
+    assert "BTC_USDT" in detail
+    assert "1h.csv" in detail
+
+
 def test_web_scan_can_use_dynamic_universe(monkeypatch):
     captured = {}
 
