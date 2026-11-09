@@ -44,7 +44,11 @@
 - [x] TP1 / TP2 and R-multiples
 - [x] Notional exposure cap
 - [x] Portfolio-wide open-risk and position limits
-- [ ] Daily loss controls
+- [x] Gross-notional exposure limit
+- [x] Correlation-aware exposure limit
+- [x] Persistent portfolio drawdown halt
+- [x] Manual confirmation-gated risk reset
+- [x] Daily and weekly loss controls
 
 ## Phase 6 — Research & Backtesting
 - [x] Shared scanner/backtest DecisionEngine
