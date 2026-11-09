@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from uuid import uuid4
 
 import pandas as pd
@@ -56,7 +57,11 @@ class DryRunBrokerAdapter(BrokerAdapter):
             "swap",
             "future",
         ),
+        now_fn: Callable[[], pd.Timestamp] | None = None,
     ):
+        self._now_fn = now_fn or (
+            lambda: pd.Timestamp.now(tz="UTC")
+        )
         self._capabilities = BrokerCapabilities(
             broker_id=broker_id,
             supported_market_types=supported_market_types,
@@ -76,7 +81,7 @@ class DryRunBrokerAdapter(BrokerAdapter):
             receipt_id=uuid4().hex,
             intent_id=intent.intent_id,
             broker_id=self.capabilities.broker_id,
-            executed_at=pd.Timestamp.now(tz="UTC"),
+            executed_at=self._now_fn(),
             mode="DRY_RUN",
             accepted=True,
             external_order_id=None,
