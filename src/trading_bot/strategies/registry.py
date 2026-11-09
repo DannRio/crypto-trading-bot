@@ -64,17 +64,34 @@ def evaluate_strategies(
     strategy_names: tuple[str, ...] | list[str] | None = None,
     min_confirmed_score: int = 70,
     min_forming_score: int = 50,
+    strategy_parameters: dict[str, dict] | None = None,
 ) -> tuple[SetupAssessment, ...]:
     names = normalize_strategy_names(strategy_names)
+    parameters = strategy_parameters or {}
+    unknown_parameter_groups = set(parameters).difference(
+        STRATEGY_EVALUATORS
+    )
+    if unknown_parameter_groups:
+        raise ValueError(
+            "Unknown strategy parameter group: "
+            + ", ".join(sorted(unknown_parameter_groups))
+        )
+
     assessments = []
 
     for name in names:
-        assessment = STRATEGY_EVALUATORS[name](
-            df,
-            structure,
-            min_confirmed_score=min_confirmed_score,
-            min_forming_score=min_forming_score,
-        )
+        try:
+            assessment = STRATEGY_EVALUATORS[name](
+                df,
+                structure,
+                min_confirmed_score=min_confirmed_score,
+                min_forming_score=min_forming_score,
+                **parameters.get(name, {}),
+            )
+        except TypeError as exc:
+            raise ValueError(
+                f"Invalid parameters for strategy {name}: {exc}"
+            ) from exc
         if assessment.strategy != name:
             assessment = SetupAssessment(
                 signal=assessment.signal,
