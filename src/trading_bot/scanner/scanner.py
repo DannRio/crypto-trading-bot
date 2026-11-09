@@ -9,10 +9,14 @@ from trading_bot.data import get_ohlcv, validate_ohlcv
 from trading_bot.decision import DecisionEngine
 from trading_bot.scanner.models import ScanResult
 from trading_bot.scanner.multi_timeframe import (
+    EntryTrigger,
     TimeframeConfirmation,
     apply_confirmation_gate,
+    apply_entry_trigger_gate,
+    evaluate_entry_trigger,
     regime_alignment,
     validate_confirmation_timeframes,
+    validate_entry_timeframe,
 )
 from trading_bot.strategies import (
     DEFAULT_STRATEGIES,
@@ -27,6 +31,7 @@ class MarketScanner:
         market_type: str = "spot",
         timeframe: str = "1h",
         confirmation_timeframes: tuple[str, ...] = (),
+        entry_timeframe: str | None = None,
         candle_limit: int = 500,
         account_equity: float = 10_000,
         risk_percent: float = 0.01,
@@ -42,6 +47,10 @@ class MarketScanner:
                 timeframe,
                 confirmation_timeframes,
             )
+        )
+        self.entry_timeframe = validate_entry_timeframe(
+            timeframe,
+            entry_timeframe,
         )
         self.candle_limit = candle_limit
         self.account_equity = account_equity
@@ -129,6 +138,54 @@ class MarketScanner:
 
         return tuple(confirmations)
 
+    def _entry_trigger_context(
+        self,
+        symbol: str,
+        signal,
+    ) -> EntryTrigger | None:
+        if self.entry_timeframe is None:
+            return None
+
+        try:
+            closed, quality, error = self._fetch_closed(
+                symbol,
+                self.entry_timeframe,
+            )
+            if error or closed is None:
+                return EntryTrigger(
+                    timeframe=self.entry_timeframe,
+                    confirmed=None,
+                    regime=None,
+                    rsi=None,
+                    close=None,
+                    ema_50=None,
+                    data_quality=quality,
+                    reason="Lower-timeframe entry trigger is unavailable.",
+                    error=error,
+                )
+
+            data = add_indicators(closed)
+            structure = analyze_market_structure(data)
+            return evaluate_entry_trigger(
+                signal=signal,
+                timeframe=self.entry_timeframe,
+                data=data,
+                regime=structure.regime,
+                data_quality=quality,
+            )
+        except Exception as exc:
+            return EntryTrigger(
+                timeframe=self.entry_timeframe,
+                confirmed=None,
+                regime=None,
+                rsi=None,
+                close=None,
+                ema_50=None,
+                data_quality=None,
+                reason="Lower-timeframe entry trigger is unavailable.",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
     def scan_symbol(self, symbol: str) -> ScanResult:
         try:
             closed, quality, error = self._fetch_closed(
@@ -165,6 +222,14 @@ class MarketScanner:
                 decision.assessment,
                 confirmations,
             )
+            entry_trigger = self._entry_trigger_context(
+                symbol,
+                final_assessment.signal,
+            )
+            final_assessment = apply_entry_trigger_gate(
+                final_assessment,
+                entry_trigger,
+            )
 
             setup = decision.setup
             if final_assessment.status != SetupStatus.CONFIRMED:
@@ -185,6 +250,8 @@ class MarketScanner:
                 confirmations=confirmations,
                 multi_timeframe_aligned=aligned,
                 candidates=decision.candidates,
+                entry_timeframe=self.entry_timeframe,
+                entry_trigger=entry_trigger,
             )
         except Exception as exc:
             return ScanResult(
@@ -198,6 +265,7 @@ class MarketScanner:
                 None,
                 f"{type(exc).__name__}: {exc}",
                 confirmation_timeframes=self.confirmation_timeframes,
+                entry_timeframe=self.entry_timeframe,
             )
 
     def scan(self, symbols: list[str]) -> list[ScanResult]:
