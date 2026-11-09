@@ -1,4 +1,5 @@
 from dataclasses import asdict
+import math
 
 import pandas as pd
 
@@ -59,8 +60,24 @@ def run_decision_backtest(
     entry_valid_bars. Full size exits at TP2; TP1 remains informational.
     If stop and target are touched in the same OHLC candle, stop wins.
     """
+    for label, value in (
+        ("initial_equity", initial_equity), ("risk_percent", risk_percent),
+        ("fee_rate", fee_rate), ("slippage_bps", slippage_bps),
+    ):
+        if not math.isfinite(value):
+            raise ValueError(f"{label} must be finite.")
     if initial_equity <= 0:
         raise ValueError("initial_equity must be positive.")
+    if not 0 < risk_percent <= 1:
+        raise ValueError("risk_percent must be between 0 and 1.")
+    if not 0 <= fee_rate < 1 or not 0 <= slippage_bps < 10_000:
+        raise ValueError("Invalid fee rate or slippage.")
+    if not 0 <= min_confirmed_score <= 100:
+        raise ValueError("min_confirmed_score must be between 0 and 100.")
+    if data.empty or data["timestamp"].duplicated().any():
+        raise ValueError("Backtest requires nonempty, unique candle timestamps.")
+    if not pd.to_datetime(data["timestamp"], utc=True).is_monotonic_increasing:
+        raise ValueError("Candles must be in chronological order.")
     if entry_valid_bars <= 0:
         raise ValueError("entry_valid_bars must be positive.")
     if decision_lookback < 21:
@@ -79,6 +96,7 @@ def run_decision_backtest(
 
     for i in range(start_index, len(prepared)):
         candle = prepared.iloc[i]
+        newly_filled = False
 
         if position is None and pending is not None:
             reference = pending["setup"].reference_entry
@@ -95,18 +113,34 @@ def run_decision_backtest(
                 )
 
                 setup = pending["setup"]
-                entry_fee = (
-                    executed_entry
-                    * setup.position_size
-                    * fee_rate
+                valid_stop = (
+                    0 < setup.stop_loss < executed_entry
+                    if signal == Signal.LONG
+                    else executed_entry < setup.stop_loss
                 )
-                risk_amount = (
-                    abs(executed_entry - setup.stop_loss)
-                    * setup.position_size
+                # Make the realized modeled 1R risk include both-side fees
+                # and adverse slippage at the intended stop.
+                stop_execution = _exit_with_slippage(
+                    setup.stop_loss, signal, slippage_bps
                 )
+                loss_per_unit = (
+                    abs(executed_entry - stop_execution)
+                    + fee_rate * (executed_entry + stop_execution)
+                )
+                position_size = min(
+                    position["qty"],
+                    equity * risk_percent / loss_per_unit,
+                ) if valid_stop and loss_per_unit > 0 else 0
+                entry_fee = executed_entry * position_size * fee_rate
+                risk_amount = loss_per_unit * position_size
+                if position_size <= 0 or not math.isfinite(position_size):
+                    pending = None
+                    continue
                 equity -= entry_fee
+                newly_filled = True
                 position = {
                     "setup": setup,
+                    "qty": position_size,
                     "entry_price": executed_entry,
                     "risk_amount": risk_amount,
                     "signal_time": pending["signal_time"],
@@ -136,7 +170,16 @@ def run_decision_backtest(
             exit_price = None
             exit_reason = None
             if hit_stop:
-                exit_price = setup.stop_loss
+                # If an existing position gaps beyond its stop, it exits
+                # at the worse open, not an impossible historical stop price.
+                # Do not apply the open to a position filled later this bar.
+                bar_open = float(candle["open"])
+                if newly_filled:
+                    exit_price = setup.stop_loss
+                elif setup.signal == Signal.LONG:
+                    exit_price = min(bar_open, setup.stop_loss)
+                else:
+                    exit_price = max(bar_open, setup.stop_loss)
                 exit_reason = "STOP_LOSS"
             elif hit_target:
                 exit_price = setup.take_profit_2
@@ -152,11 +195,11 @@ def run_decision_backtest(
                     setup.signal,
                     position["entry_price"],
                     executed_exit,
-                    setup.position_size,
+                    position["qty"],
                 )
                 exit_fee = (
                     executed_exit
-                    * setup.position_size
+                    * position["qty"]
                     * fee_rate
                 )
                 equity += gross_pnl - exit_fee
@@ -182,7 +225,7 @@ def run_decision_backtest(
                         exit_price=executed_exit,
                         stop_loss=setup.stop_loss,
                         take_profit=setup.take_profit_2,
-                        position_size=setup.position_size,
+                        position_size=position["qty"],
                         pnl=net_pnl,
                         exit_reason=exit_reason,
                         strategy="trend_continuation",
@@ -201,8 +244,9 @@ def run_decision_backtest(
                 setup.signal,
                 position["entry_price"],
                 float(candle["close"]),
-                setup.position_size,
+                position["qty"],
             )
+            mark_equity -= float(candle["close"]) * position["qty"] * fee_rate
 
         peak_equity = max(peak_equity, mark_equity)
         if peak_equity > 0:
@@ -276,7 +320,7 @@ def run_decision_backtest(
                 exit_price=executed_exit,
                 stop_loss=setup.stop_loss,
                 take_profit=setup.take_profit_2,
-                position_size=setup.position_size,
+                position_size=position["qty"],
                 pnl=net_pnl,
                 exit_reason="END_OF_DATA",
                 strategy="trend_continuation",
