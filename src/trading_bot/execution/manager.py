@@ -1,4 +1,4 @@
-from trading_bot.assisted import PreparedOrder
+from trading_bot.assisted.models import PreparedOrder
 from trading_bot.execution.gateway import OrderGateway
 from trading_bot.execution.models import (
     ExchangeOrderSnapshot,
