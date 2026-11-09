@@ -89,6 +89,13 @@ def run_decision_backtest(
     max_drawdown = 0.0
 
     trades: list[CompletedTrade] = []
+    # Realized cash alone hides drawdown while a position remains open.
+    # Keep the mark-to-market equity at each completed candle close.
+    equity_points = [{
+        "timestamp": pd.Timestamp(prepared.iloc[0]["timestamp"]),
+        "equity": float(initial_equity),
+        "realized_equity": float(initial_equity),
+    }]
     pending = None
     position = None
 
@@ -248,6 +255,11 @@ def run_decision_backtest(
             )
             mark_equity -= float(candle["close"]) * position["qty"] * fee_rate
 
+        equity_points.append({
+            "timestamp": pd.Timestamp(candle["timestamp"]),
+            "equity": float(mark_equity),
+            "realized_equity": float(equity),
+        })
         peak_equity = max(peak_equity, mark_equity)
         if peak_equity > 0:
             max_drawdown = max(
@@ -331,6 +343,11 @@ def run_decision_backtest(
             )
         )
 
+    if equity_points:
+        # Mark the last candle flat after the END_OF_DATA liquidation, if any.
+        equity_points[-1]["equity"] = float(equity)
+        equity_points[-1]["realized_equity"] = float(equity)
+
     trade_df = pd.DataFrame([asdict(trade) for trade in trades])
     total_trades, win_rate, profit_factor, average_pnl = (
         calculate_trade_metrics(trade_df)
@@ -349,4 +366,5 @@ def run_decision_backtest(
         profit_factor=profit_factor,
         average_pnl=average_pnl,
         trades=trade_df,
+        equity_curve=pd.DataFrame(equity_points),
     )
