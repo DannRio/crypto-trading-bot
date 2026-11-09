@@ -14,6 +14,7 @@ from trading_bot.execution.gateway import (
     ImmediateFillOrderGateway,
     OrderGateway,
 )
+from trading_bot.core.order_ids import client_order_id_for_intent
 from trading_bot.execution.manager import OrderManager
 from trading_bot.execution.models import ManagedOrderStatus
 from trading_bot.execution.store import OrderStore
@@ -77,7 +78,9 @@ class ManagedDryRunBrokerAdapter(BrokerAdapter):
             price=float(
                 intent.plan["reference_entry"]
             ),
-            client_order_id=intent.intent_id,
+            client_order_id=client_order_id_for_intent(
+                intent.intent_id
+            ),
         )
 
     def execute(

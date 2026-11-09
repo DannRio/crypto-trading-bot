@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sqlite3
 from uuid import uuid4
 
 import pandas as pd
 
-from trading_bot.assisted import PreparedOrder
+from trading_bot.assisted.models import PreparedOrder
 from trading_bot.execution.models import (
+    ExecutionControlState,
     ManagedOrder,
     ManagedOrderStatus,
     OrderEvent,
@@ -22,6 +24,14 @@ def _utc_timestamp(value=None) -> pd.Timestamp:
     if timestamp.tzinfo is None:
         return timestamp.tz_localize("UTC")
     return timestamp.tz_convert("UTC")
+
+
+def _canonical_json(value: dict | None) -> str:
+    return json.dumps(
+        value or {},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 class OrderStore:
@@ -39,6 +49,25 @@ class OrderStore:
         )
         self.connection.row_factory = sqlite3.Row
         self._initialize()
+
+    def _ensure_column(
+        self,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        rows = self.connection.execute(
+            f"PRAGMA table_info({table})"
+        ).fetchall()
+        existing = {
+            str(row["name"])
+            for row in rows
+        }
+        if column not in existing:
+            self.connection.execute(
+                f"ALTER TABLE {table} "
+                f"ADD COLUMN {column} {definition}"
+            )
 
     def _initialize(self) -> None:
         self.connection.executescript(
@@ -60,7 +89,8 @@ class OrderStore:
                 average_price REAL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                last_error TEXT
+                last_error TEXT,
+                params_json TEXT NOT NULL DEFAULT '{}'
             );
 
             CREATE TABLE IF NOT EXISTS order_events (
@@ -74,12 +104,52 @@ class OrderStore:
                     REFERENCES managed_orders(order_id)
             );
 
+            CREATE TABLE IF NOT EXISTS execution_control (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                armed INTEGER NOT NULL,
+                halted INTEGER NOT NULL,
+                halt_reason TEXT NOT NULL,
+                updated_by TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS execution_context (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                exchange_id TEXT NOT NULL,
+                market_type TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_managed_orders_status
                 ON managed_orders(status, updated_at);
+
+            CREATE INDEX IF NOT EXISTS idx_managed_orders_external
+                ON managed_orders(external_order_id);
 
             CREATE INDEX IF NOT EXISTS idx_order_events_order
                 ON order_events(order_id, occurred_at);
             """
+        )
+        self._ensure_column(
+            "managed_orders",
+            "params_json",
+            "TEXT NOT NULL DEFAULT '{}'",
+        )
+
+        now = pd.Timestamp.now(tz="UTC").isoformat()
+        self.connection.execute(
+            """
+            INSERT OR IGNORE INTO execution_control (
+                id,
+                armed,
+                halted,
+                halt_reason,
+                updated_by,
+                updated_at
+            )
+            VALUES (1, 0, 0, '', 'SYSTEM', ?)
+            """,
+            (now,),
         )
         self.connection.commit()
 
@@ -87,6 +157,20 @@ class OrderStore:
     def _row_to_order(
         row: sqlite3.Row,
     ) -> ManagedOrder:
+        params_raw = (
+            row["params_json"]
+            if "params_json" in row.keys()
+            else "{}"
+        )
+        try:
+            params = json.loads(
+                params_raw or "{}"
+            )
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "Managed order parameters are corrupted."
+            ) from exc
+
         return ManagedOrder(
             order_id=str(row["order_id"]),
             intent_id=str(row["intent_id"]),
@@ -127,6 +211,7 @@ class OrderStore:
                 if row["last_error"] is not None
                 else None
             ),
+            params=params,
         )
 
     def get(
@@ -165,6 +250,24 @@ class OrderStore:
             else None
         )
 
+    def get_by_client_order_id(
+        self,
+        client_order_id: str,
+    ) -> ManagedOrder | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM managed_orders
+            WHERE client_order_id = ?
+            """,
+            (client_order_id,),
+        ).fetchone()
+        return (
+            self._row_to_order(row)
+            if row is not None
+            else None
+        )
+
     def create_or_get(
         self,
         prepared: PreparedOrder,
@@ -173,6 +276,10 @@ class OrderStore:
         existing = self.get_by_intent(
             prepared.intent_id
         )
+        expected_params = _canonical_json(
+            prepared.params
+        )
+
         if existing is not None:
             expected = (
                 prepared.exchange_id,
@@ -183,6 +290,7 @@ class OrderStore:
                 float(prepared.amount),
                 float(prepared.price),
                 prepared.client_order_id,
+                expected_params,
             )
             actual = (
                 existing.exchange_id,
@@ -193,6 +301,7 @@ class OrderStore:
                 existing.amount,
                 existing.limit_price,
                 existing.client_order_id,
+                _canonical_json(existing.params),
             )
             if actual != expected:
                 raise ValueError(
@@ -224,11 +333,12 @@ class OrderStore:
                     average_price,
                     created_at,
                     updated_at,
-                    last_error
+                    last_error,
+                    params_json
                 )
                 VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    'PREPARED', NULL, 0, NULL, ?, ?, NULL
+                    'PREPARED', NULL, 0, NULL, ?, ?, NULL, ?
                 )
                 """,
                 (
@@ -244,6 +354,7 @@ class OrderStore:
                     prepared.client_order_id,
                     timestamp.isoformat(),
                     timestamp.isoformat(),
+                    expected_params,
                 ),
             )
             self.connection.execute(
@@ -475,6 +586,141 @@ class OrderStore:
             self._row_to_order(row)
             for row in rows
         ]
+
+    def bind_execution_context(
+        self,
+        *,
+        exchange_id: str,
+        market_type: str,
+        now=None,
+    ) -> dict[str, str]:
+        exchange_id = exchange_id.strip()
+        market_type = market_type.strip()
+        if not exchange_id or not market_type:
+            raise ValueError(
+                "exchange_id and market_type are required."
+            )
+
+        existing = self.load_execution_context()
+        if existing is not None:
+            if (
+                existing["exchange_id"]
+                != exchange_id
+                or existing["market_type"]
+                != market_type
+            ):
+                raise ValueError(
+                    "Live order ledger is already locked to "
+                    f"{existing['exchange_id']} "
+                    f"{existing['market_type']}."
+                )
+            return existing
+
+        timestamp = _utc_timestamp(now)
+        self.connection.execute(
+            """
+            INSERT INTO execution_context (
+                id,
+                exchange_id,
+                market_type,
+                created_at
+            )
+            VALUES (1, ?, ?, ?)
+            """,
+            (
+                exchange_id,
+                market_type,
+                timestamp.isoformat(),
+            ),
+        )
+        self.connection.commit()
+        context = self.load_execution_context()
+        assert context is not None
+        return context
+
+    def load_execution_context(
+        self,
+    ) -> dict[str, str] | None:
+        row = self.connection.execute(
+            """
+            SELECT exchange_id, market_type, created_at
+            FROM execution_context
+            WHERE id = 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "exchange_id": str(
+                row["exchange_id"]
+            ),
+            "market_type": str(
+                row["market_type"]
+            ),
+            "created_at": str(
+                row["created_at"]
+            ),
+        }
+
+    def load_execution_control(
+        self,
+    ) -> ExecutionControlState:
+        row = self.connection.execute(
+            """
+            SELECT armed, halted, halt_reason, updated_by, updated_at
+            FROM execution_control
+            WHERE id = 1
+            """
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(
+                "Execution control state is missing."
+            )
+        return ExecutionControlState(
+            armed=bool(row["armed"]),
+            halted=bool(row["halted"]),
+            halt_reason=str(row["halt_reason"]),
+            updated_by=str(row["updated_by"]),
+            updated_at=_utc_timestamp(
+                row["updated_at"]
+            ),
+        )
+
+    def update_execution_control(
+        self,
+        *,
+        armed: bool,
+        halted: bool,
+        halt_reason: str,
+        updated_by: str,
+        now=None,
+    ) -> ExecutionControlState:
+        actor = updated_by.strip()
+        if not actor:
+            raise ValueError(
+                "Execution-control actor is required."
+            )
+        timestamp = _utc_timestamp(now)
+        self.connection.execute(
+            """
+            UPDATE execution_control
+            SET armed = ?,
+                halted = ?,
+                halt_reason = ?,
+                updated_by = ?,
+                updated_at = ?
+            WHERE id = 1
+            """,
+            (
+                1 if armed else 0,
+                1 if halted else 0,
+                halt_reason.strip(),
+                actor,
+                timestamp.isoformat(),
+            ),
+        )
+        self.connection.commit()
+        return self.load_execution_control()
 
     def close(self) -> None:
         self.connection.close()

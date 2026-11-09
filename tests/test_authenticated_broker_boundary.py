@@ -151,7 +151,8 @@ def test_authenticated_adapter_prepares_precision_checked_order():
     assert prepared.order_type == "limit"
     assert prepared.amount == pytest.approx(1.235)
     assert prepared.price == pytest.approx(100.13)
-    assert prepared.client_order_id == "intent-1"
+    assert prepared.client_order_id.startswith("tb-")
+    assert prepared.client_order_id != "intent-1"
     assert adapter.capabilities.live_execution is False
 
 
@@ -214,3 +215,40 @@ def test_live_execution_is_hard_disabled():
 
     with pytest.raises(RuntimeError, match="Live order submission is disabled"):
         adapter.execute(intent())
+
+
+
+class ContractFakeExchange(FakeExchange):
+    def load_markets(self, reload=False):
+        markets = super().load_markets(
+            reload
+        )
+        market = markets["BTC/USDT"]
+        market["contract"] = True
+        market["contractSize"] = 0.01
+        market["limits"]["amount"]["max"] = 1000.0
+        return markets
+
+
+def test_derivative_base_size_is_converted_to_contracts():
+    adapter = AuthenticatedCCXTBrokerAdapter(
+        exchange_id="kucoin",
+        market_type="swap",
+        credential_provider=StaticCredentialProvider(),
+        exchange_factory=ContractFakeExchange,
+    )
+
+    prepared = adapter.prepare_order(
+        intent(
+            market_type="swap",
+            amount=1.23456,
+            price=100.126,
+        )
+    )
+
+    assert prepared.amount == pytest.approx(
+        123.456
+    )
+    assert prepared.price == pytest.approx(
+        100.13
+    )

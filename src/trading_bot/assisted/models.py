@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -86,3 +86,4 @@ class PreparedOrder:
     amount: float
     price: float
     client_order_id: str
+    params: dict[str, Any] = field(default_factory=dict)

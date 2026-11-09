@@ -95,20 +95,23 @@
 - [x] Authenticated broker preparation boundary
 - [x] Environment-only credential provider
 - [x] Exchange precision / minimum-limit validation
-- [ ] Live order-capable authenticated broker adapter
+- [x] Live order-capable authenticated broker adapter (guarded spot only)
 - [x] Persistent normalized order-state manager
 - [x] Idempotent client-order identity
 - [x] Ambiguous submission -> reconcile-before-retry
 - [x] Partial-fill and cancellation state handling
 - [x] Connect assisted approvals to managed orders
-- [ ] Live exchange order management
+- [x] Live exchange order management (manual guarded spot only)
 
 ## Phase 10 — Automated Execution
-- [ ] Live exchange adapter
+- [x] Guarded live spot exchange adapter
+- [x] Duplicate-order protection
+- [x] Partial-fill order-state reconciliation
+- [x] Bot-state ↔ exchange-state reconciliation
+- [x] Persistent kill switch
+- [ ] Explicit derivatives leverage / margin / position-mode controls
+- [ ] Live derivatives execution
+- [ ] Automated scanner → live execution daemon
 - [ ] WebSocket market data
-- [ ] Duplicate-order protection
-- [ ] Partial fills
-- [ ] Reconciliation
-- [ ] Kill switch
-- [ ] Monitoring
+- [ ] Continuous execution monitoring / alerting
 - [ ] VPS/Docker deployment

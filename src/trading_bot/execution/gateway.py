@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import replace
 from uuid import uuid4
 
-from trading_bot.assisted import PreparedOrder
+from trading_bot.assisted.models import PreparedOrder
 from trading_bot.execution.models import (
     ExchangeOrderSnapshot,
     ManagedOrderStatus,
@@ -31,6 +31,13 @@ class OrderGateway(ABC):
         client_order_id: str,
         symbol: str,
     ) -> ExchangeOrderSnapshot | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_open_orders(
+        self,
+        symbol: str | None = None,
+    ) -> list[ExchangeOrderSnapshot]:
         raise NotImplementedError
 
     @abstractmethod
@@ -98,6 +105,20 @@ class InMemoryOrderGateway(OrderGateway):
             return None
         return self._by_external[external_id]
 
+    def list_open_orders(
+        self,
+        symbol: str | None = None,
+    ) -> list[ExchangeOrderSnapshot]:
+        return [
+            snapshot
+            for snapshot in self._by_external.values()
+            if snapshot.status
+            in {
+                ManagedOrderStatus.SUBMITTED,
+                ManagedOrderStatus.PARTIALLY_FILLED,
+            }
+        ]
+
     def cancel(
         self,
         external_order_id: str,
@@ -157,13 +178,8 @@ class InMemoryOrderGateway(OrderGateway):
         return updated
 
 
-
 class ImmediateFillOrderGateway(InMemoryOrderGateway):
-    """No-network gateway that immediately fills accepted orders.
-
-    Useful for the assisted dashboard because terminal dry-run orders do not
-    require synthetic exchange state to survive a process restart.
-    """
+    """No-network gateway that immediately fills accepted orders."""
 
     def submit(
         self,

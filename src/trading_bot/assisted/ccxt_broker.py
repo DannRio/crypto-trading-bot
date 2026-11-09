@@ -13,6 +13,7 @@ from trading_bot.assisted.models import (
     PreparedOrder,
     TradeIntent,
 )
+from trading_bot.core.order_ids import client_order_id_for_intent
 
 
 class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
@@ -29,6 +30,8 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
         market_type: str,
         credential_provider: EnvironmentCredentialProvider | None = None,
         exchange_factory: Callable[[dict], object] | None = None,
+        require_attached_protection: bool = False,
+        require_client_order_id: bool = False,
     ):
         self.exchange_id = exchange_id
         self.market_type = market_type
@@ -43,6 +46,12 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
             exchange_factory
         )
         self._markets: dict | None = None
+        self.require_attached_protection = (
+            require_attached_protection
+        )
+        self.require_client_order_id = (
+            require_client_order_id
+        )
 
         self._capabilities = BrokerCapabilities(
             broker_id=f"ccxt:{exchange_id}",
@@ -160,6 +169,88 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
                 f"{name} {value} exceeds exchange maximum {maximum}."
             )
 
+    def _feature_value(
+        self,
+        symbol: str,
+        feature: str,
+    ):
+        method = getattr(
+            self.exchange,
+            "feature_value",
+            None,
+        )
+        if callable(method):
+            return method(
+                symbol,
+                "createOrder",
+                feature,
+            )
+
+        camel = getattr(
+            self.exchange,
+            "featureValue",
+            None,
+        )
+        if callable(camel):
+            return camel(
+                symbol,
+                "createOrder",
+                feature,
+            )
+
+        return None
+
+    def _protective_params(
+        self,
+        intent: TradeIntent,
+    ) -> dict:
+        if not self.require_attached_protection:
+            return {}
+
+        stop_loss = intent.plan.get(
+            "stop_loss"
+        )
+        take_profit = intent.plan.get(
+            "take_profit_2"
+        )
+        if stop_loss is None or take_profit is None:
+            raise ValueError(
+                "Live order preparation requires both stop_loss "
+                "and take_profit_2 in the immutable trade plan."
+            )
+
+        stop_supported = self._feature_value(
+            intent.symbol,
+            "stopLoss",
+        )
+        take_supported = self._feature_value(
+            intent.symbol,
+            "takeProfit",
+        )
+        if not stop_supported:
+            raise RuntimeError(
+                "Exchange does not advertise attached stop-loss "
+                f"support for {intent.symbol}."
+            )
+        if not take_supported:
+            raise RuntimeError(
+                "Exchange does not advertise attached take-profit "
+                f"support for {intent.symbol}."
+            )
+
+        return {
+            "stopLoss": {
+                "triggerPrice": float(
+                    stop_loss
+                ),
+            },
+            "takeProfit": {
+                "triggerPrice": float(
+                    take_profit
+                ),
+            },
+        }
+
     def prepare_order(
         self,
         intent: TradeIntent,
@@ -186,21 +277,58 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
                 f"Exchange market is inactive: {intent.symbol}"
             )
 
-        requested_amount = float(
+        requested_base_amount = float(
             intent.plan["position_size"]
         )
         requested_price = float(
             intent.plan["reference_entry"]
         )
-        if requested_amount <= 0 or requested_price <= 0:
+        if (
+            requested_base_amount <= 0
+            or requested_price <= 0
+        ):
             raise ValueError(
                 "Intent amount and price must be positive."
+            )
+
+        if (
+            self.require_client_order_id
+            and not self._feature_value(
+                intent.symbol,
+                "clientOrderId",
+            )
+        ):
+            raise RuntimeError(
+                "Exchange does not advertise clientOrderId support "
+                f"for {intent.symbol}; live idempotent submission "
+                "is disabled for this market."
+            )
+
+        contract_size = 1.0
+        requested_order_amount = (
+            requested_base_amount
+        )
+        if market.get("contract"):
+            try:
+                contract_size = float(
+                    market.get("contractSize")
+                )
+            except (TypeError, ValueError):
+                contract_size = 0.0
+            if contract_size <= 0:
+                raise RuntimeError(
+                    "Contract market has no valid contractSize; "
+                    "cannot convert base risk size to contracts."
+                )
+            requested_order_amount = (
+                requested_base_amount
+                / contract_size
             )
 
         amount = float(
             self.exchange.amount_to_precision(
                 intent.symbol,
-                requested_amount,
+                requested_order_amount,
             )
         )
         price = float(
@@ -209,7 +337,12 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
                 requested_price,
             )
         )
-        cost = amount * price
+        base_amount = (
+            amount * contract_size
+            if market.get("contract")
+            else amount
+        )
+        cost = base_amount * price
 
         self._check_range(
             "amount",
@@ -243,7 +376,14 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
             ),
             amount=amount,
             price=price,
-            client_order_id=intent.intent_id,
+            client_order_id=(
+                client_order_id_for_intent(
+                    intent.intent_id
+                )
+            ),
+            params=self._protective_params(
+                intent
+            ),
         )
 
     def execute(

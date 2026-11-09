@@ -1,4 +1,4 @@
-from trading_bot.assisted import PreparedOrder
+from trading_bot.assisted.models import PreparedOrder
 from trading_bot.execution.gateway import OrderGateway
 from trading_bot.execution.models import (
     ExchangeOrderSnapshot,
@@ -42,6 +42,7 @@ class OrderManager:
             amount=order.amount,
             price=order.limit_price,
             client_order_id=order.client_order_id,
+            params=dict(order.params or {}),
         )
 
     def _apply_snapshot(
@@ -57,7 +58,8 @@ class OrderManager:
         now=None,
     ) -> ManagedOrder:
         if (
-            snapshot.client_order_id
+            snapshot.client_order_id is not None
+            and snapshot.client_order_id
             != order.client_order_id
         ):
             raise ValueError(
@@ -80,6 +82,7 @@ class OrderManager:
             ManagedOrderStatus.FILLED,
             ManagedOrderStatus.CANCELLED,
             ManagedOrderStatus.REJECTED,
+            ManagedOrderStatus.UNKNOWN,
         }:
             raise ValueError(
                 "Gateway returned an unsupported normalized order state: "
@@ -98,6 +101,27 @@ class OrderManager:
             last_error=None,
             event_type=event_type,
             message=snapshot.message,
+            now=now,
+        )
+
+    def apply_snapshot(
+        self,
+        order_id: str,
+        snapshot: ExchangeOrderSnapshot,
+        *,
+        event_type: str = "RECONCILED",
+        now=None,
+    ) -> ManagedOrder:
+        order = self.store.get(order_id)
+        if order is None:
+            raise KeyError(
+                f"Unknown managed order: {order_id}"
+            )
+        return self._apply_snapshot(
+            order,
+            snapshot,
+            allowed_from=(order.status,),
+            event_type=event_type,
             now=now,
         )
 
