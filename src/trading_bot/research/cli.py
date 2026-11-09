@@ -8,6 +8,7 @@ from trading_bot.data import (
     IncompleteHistoryError,
     assess_history_coverage,
     download_history,
+    import_history_csv,
 )
 from trading_bot.research.batch import run_batch_research
 from trading_bot.research.evaluation import (
@@ -53,6 +54,17 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument("--batch-limit", type=int, default=1000)
     download.add_argument("--allow-partial", action="store_true",
                           help="Allow incomplete ranges with an explicit warning.")
+
+    import_csv = subparsers.add_parser("import-csv")
+    import_csv.add_argument("--exchange", required=True)
+    import_csv.add_argument("--market-type", default="spot")
+    import_csv.add_argument("--symbol", required=True)
+    import_csv.add_argument("--timeframe", required=True)
+    import_csv.add_argument("--root", default="data/history")
+    import_csv.add_argument("--file", required=True)
+    import_csv.add_argument("--start", required=True)
+    import_csv.add_argument("--end", required=True)
+    import_csv.add_argument("--allow-partial", action="store_true")
 
     backtest = subparsers.add_parser("backtest")
     _add_dataset_args(backtest)
@@ -155,6 +167,31 @@ def _download(args) -> int:
                 failed = True
                 print(f"FAILED: {symbol} {timeframe}: {exc}")
     return 1 if failed else 0
+
+
+def _import_csv(args) -> int:
+    store = HistoricalDataStore(args.root)
+    try:
+        report = import_history_csv(
+            file_path=args.file,
+            start=args.start,
+            end=args.end,
+            symbol=args.symbol,
+            timeframe=args.timeframe,
+            exchange_id=args.exchange,
+            market_type=args.market_type,
+            store=store,
+            strict_coverage=not args.allow_partial,
+        )
+    except (ValueError, OSError) as exc:
+        print(f"FAILED importing CSV: {exc}")
+        return 1
+    label = "COMPLETE" if report.complete else "PARTIAL / NOT VERIFIED"
+    print(
+        f"Imported [{label}]: {report.summary()} -> "
+        f"{store.dataset_path(args.exchange, args.market_type, args.symbol, args.timeframe)}"
+    )
+    return 0
 
 
 def _backtest(args) -> int:
@@ -293,6 +330,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "download":
         return _download(args)
+    if args.command == "import-csv":
+        return _import_csv(args)
     if args.command == "backtest":
         return _backtest(args)
     if args.command == "oos":
