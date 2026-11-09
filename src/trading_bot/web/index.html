@@ -17,7 +17,22 @@
 <div class="field"><label for="minScore">Min. confirmed score</label><input id="minScore" type="number" min="0" max="100" value="70" step="5"></div>
 </div><div class="actions"><button id="lookupMarkets" class="secondary" type="button">Find valid markets</button><button id="scan" type="button">Scan markets</button></div><div class="field" style="margin-top:12px"><label for="available">Available exchange symbols (choose after Find valid markets)</label><select id="available"><option value="">Find valid markets to load this list</option></select></div><div id="error" role="alert"></div></section>
 <section class="card"><h2>Market opportunities</h2><small id="scanStatus">Select markets and scan.</small><div class="table-wrap"><table><thead><tr><th>Market</th><th>Status / direction</th><th>Score</th><th>Entry zone</th><th>Stop</th><th>TP1 / TP2</th><th>Risk / notional</th><th>Why</th></tr></thead><tbody id="results"><tr><td colspan="8" class="muted">No scan yet</td></tr></tbody></table></div></section>
-<section class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:15px;flex-wrap:wrap"><div><h2>Backtest a market</h2><small>First entered symbol · same decision rules as scanner · fee 0.1%/side, slippage 5 bps/side.</small><div class="field" style="margin-top:12px"><label for="btSource">Data source</label><select id="btSource"><option value="live">Recent exchange candles (quick check)</option><option value="history">Local multi-year data (download in terminal first)</option></select></div></div><button id="backtest" class="secondary" type="button">Run backtest</button></div><p id="btStatus">Choose Recent to test a short period, or Local multi-year data after downloading the dataset via crypto-research.</p><div class="metrics" id="metrics"></div><div class="table-wrap"><table style="min-width:590px"><thead><tr><th>Side</th><th>Entry</th><th>Exit</th><th>Net P&amp;L</th><th>Exit reason</th></tr></thead><tbody id="trades"></tbody></table></div></section>
+<section class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:15px;flex-wrap:wrap"><div><h2>Backtest a market</h2><small>Independent market selection · same strategy rules as scanner · modeled fee 0.1%/side, slippage 5 bps/side.</small></div><button id="backtest" class="secondary" type="button">Run backtest</button></div>
+<div class="filters" style="margin-top:15px">
+<div class="field"><label for="btSource">Backtest data source</label><select id="btSource"><option value="history" selected>Local historical dataset</option><option value="live">Recent exchange candles</option></select></div>
+<div class="field"><label for="btExchange">Exchange</label><select id="btExchange"><option>kraken</option><option>krakenfutures</option><option selected>kucoin</option><option>bybit</option><option>binance</option><option>okx</option><option>coinbase</option></select></div>
+<div class="field"><label for="btType">Instrument type</label><select id="btType"><option selected>spot</option><option>swap</option><option>future</option></select></div>
+<div class="field"><label for="btTimeframe">Timeframe</label><select id="btTimeframe"><option>5m</option><option>15m</option><option selected>1h</option><option>4h</option><option>1d</option></select></div>
+<div class="field"><label for="btSymbol">Backtest symbol</label><input id="btSymbol" value="BTC/USDT" spellcheck="false" /></div>
+</div>
+<div id="archiveControls" style="margin-top:15px">
+<div class="field"><label for="btDatasets">Saved datasets in data/history/</label><select id="btDatasets"><option value="">Click Find saved history to browse files</option></select></div>
+<div class="actions"><button id="findHistory" class="secondary" type="button">Find saved history</button><button id="checkHistory" class="secondary" type="button">Check selected dataset</button></div>
+<small id="historyInfo">Saved files must match the selected exchange, type, symbol and timeframe. These settings are independent from Market Scanner.</small>
+</div>
+<div id="btError" role="alert" style="display:none;margin-top:14px;color:#ffc5cd;background:#391e29;border:1px solid #6b3540;padding:12px;border-radius:9px"></div>
+<p id="btStatus">Use Find saved history to select your existing BTC/USDT hourly dataset, then run the backtest.</p>
+<div class="metrics" id="metrics"></div><div class="table-wrap"><table style="min-width:590px"><thead><tr><th>Side</th><th>Entry</th><th>Exit</th><th>Net P&amp;L</th><th>Exit reason</th></tr></thead><tbody id="trades"></tbody></table></div></section>
 <div class="footer">Local research only; no login, exchange keys or live orders. Kraken spot and Kraken Futures are separate exchanges in CCXT. Verify futures symbols using Find valid markets. Futures P&L remains a synthetic base-quantity estimate without contract multiplier, funding or liquidation modeling. An incomplete history download is not a multi-year backtest.</div>
 </main><script>
 "use strict";
@@ -29,9 +44,82 @@ function settings(){const params=new URLSearchParams({exchange:$("#exchange").va
 function showError(msg){$("#error").textContent=msg;$("#error").style.display=msg?"block":"none"}
 async function getJSON(url){const response=await fetch(url);const d=await response.json().catch(()=>({detail:"Unexpected response from server"}));if(!response.ok){const detail=Array.isArray(d.detail)?d.detail.map(x=>x.msg).join("; "):d.detail;throw Error(detail||"Request failed")}return d}
 async function scan(){const b=$("#scan");b.disabled=true;showError("");$("#scanStatus").textContent="Scanning markets…";try{const data=await getJSON("/api/scan?"+settings());const tbody=$("#results");tbody.replaceChildren();for(const item of data.results){const tr=document.createElement("tr"),s=item.setup;cell(tr,item.symbol);cell(tr,item.status+" · "+item.signal,item.status==="CONFIRMED"?"positive":item.status==="FORMING"?"pending":"muted");cell(tr,item.score+"/100");cell(tr,s?fmt(s.entry_low)+" – "+fmt(s.entry_high):"—");cell(tr,s?fmt(s.stop_loss):"—");cell(tr,s?fmt(s.take_profit_1)+" / "+fmt(s.take_profit_2):"—");cell(tr,s?fmt(s.actual_risk_amount)+" / "+fmt(s.notional_value):"—");cell(tr,item.error||item.reason||"No analysis","reasons");tbody.appendChild(tr)}$("#scanStatus").textContent="Analyzed "+data.results.length+" market(s) · "+data.exchange+" · "+data.market_type+" · "+data.timeframe+" · orders disabled";}catch(e){showError(e.message);$("#scanStatus").textContent="Scan failed."}finally{b.disabled=false}}
-async function backtest(){const b=$("#backtest");b.disabled=true;showError("");$("#btStatus").textContent="Running backtest…";try{const p=settings();p.set("symbol",($("#symbols").value.split(",")[0]||"").trim());p.delete("symbols");p.set("source",$("#btSource").value);const d=await getJSON("/api/backtest?"+p);$("#btStatus").textContent=d.symbol+" · "+d.source+" · "+d.data_rows+" candles ("+d.data_start.slice(0,10)+" – "+d.data_end.slice(0,10)+") · assumed "+(d.assumptions.fee_rate_per_side*100).toFixed(2)+"% fee/side and "+d.assumptions.slippage_bps_per_side+" bps slippage/side";const m=d.metrics;const values=[["Net return",percent(m.return_pct)],["Final equity",fmt(m.final_equity)],["Max drawdown",percent(m.max_drawdown_pct)],["Trades",m.total_trades],["Win rate",percent(m.win_rate_pct)],["Profit factor",fmt(m.profit_factor)],["Average P&L",fmt(m.average_pnl)]];const box=$("#metrics");box.replaceChildren();for(const [label,value] of values){const item=document.createElement("div");item.className="metric";const span=document.createElement("span");span.className="muted";span.textContent=label;const bold=document.createElement("b");bold.textContent=value;item.append(span,bold);box.appendChild(item)}const tbody=$("#trades");tbody.replaceChildren();for(const trade of d.recent_trades){const tr=document.createElement("tr");for(const value of [trade.signal,fmt(trade.entry_price),fmt(trade.exit_price),fmt(trade.pnl),trade.exit_reason])cell(tr,value);tbody.appendChild(tr)}}catch(e){showError(e.message);$("#btStatus").textContent="Backtest failed."}finally{b.disabled=false}}
+function backtestParams(){
+ return new URLSearchParams({
+  exchange:$("#btExchange").value,market_type:$("#btType").value,
+  symbol:$("#btSymbol").value.trim(),timeframe:$("#btTimeframe").value,
+  equity:$("#equity").value,risk_percent:$("#risk").value,
+  min_score:$("#minScore").value,source:$("#btSource").value
+ });
+}
+function showBacktestError(message){$("#btError").textContent=message;$("#btError").style.display=message?"block":"none"}
+async function checkHistory(){
+ if($("#btSource").value!=="history")return true;
+ const p=backtestParams();
+ showBacktestError("");
+ try{
+  const d=await getJSON("/api/history/check?"+p);
+  if(!d.found){
+   $("#historyInfo").textContent=d.message+" Expected file: "+d.path;
+   return false;
+  }
+  $("#historyInfo").textContent="Found "+d.rows.toLocaleString()+" candles: "+d.start.slice(0,10)+" through "+d.end.slice(0,10)+" · "+d.path;
+  return true;
+ }catch(e){showBacktestError(e.message);return false}
+}
+async function findSavedHistory(){
+ const b=$("#findHistory");b.disabled=true;showBacktestError("");
+ try{
+  const response=await getJSON("/api/history/datasets");
+  const select=$("#btDatasets");select.replaceChildren();
+  const first=document.createElement("option");first.value="";first.textContent=response.datasets.length?"Choose a saved dataset":"No history CSV files found in data/history/";select.appendChild(first);
+  for(const dataset of response.datasets){
+   const option=document.createElement("option");
+   option.value=JSON.stringify(dataset);
+   option.textContent=dataset.exchange+" · "+dataset.market_type+" · "+(dataset.symbol||dataset.stored_symbol)+" · "+dataset.timeframe;
+   select.appendChild(option);
+  }
+  if(response.datasets.length===1&&response.datasets[0].symbol){
+   select.selectedIndex=1;select.dispatchEvent(new Event("change"));
+  }
+  if(!response.datasets.length)$("#historyInfo").textContent="No datasets found. Confirm you started the server in the repository directory containing data/history/.";
+ }catch(e){showBacktestError(e.message)}finally{b.disabled=false}
+}
+async function backtest(){
+ const b=$("#backtest");b.disabled=true;showBacktestError("");
+ $("#btStatus").textContent="Running backtest…";
+ try{
+  const p=backtestParams();
+  if(p.get("source")==="history"&&!(await checkHistory())){
+   throw Error("Saved history not found for the selected backtest market. Choose an entry under Find saved history or match your terminal download settings.");
+  }
+  const d=await getJSON("/api/backtest?"+p);
+  $("#btStatus").textContent=d.symbol+" · "+d.exchange+" "+d.market_type+" · "+d.source+" · "+d.data_rows.toLocaleString()+" candles ("+d.data_start.slice(0,10)+" – "+d.data_end.slice(0,10)+") · fees "+(d.assumptions.fee_rate_per_side*100).toFixed(2)+"%/side and slippage "+d.assumptions.slippage_bps_per_side+" bps/side";
+  const m=d.metrics;
+  const values=[["Net return",percent(m.return_pct)],["Final equity",fmt(m.final_equity)],["Max drawdown",percent(m.max_drawdown_pct)],["Trades",m.total_trades],["Win rate",percent(m.win_rate_pct)],["Profit factor",fmt(m.profit_factor)],["Average P&L",fmt(m.average_pnl)]];
+  const box=$("#metrics");box.replaceChildren();
+  for(const [label,value] of values){const item=document.createElement("div");item.className="metric";const span=document.createElement("span");span.className="muted";span.textContent=label;const bold=document.createElement("b");bold.textContent=value;item.append(span,bold);box.appendChild(item)}
+  const tbody=$("#trades");tbody.replaceChildren();
+  for(const trade of d.recent_trades){const tr=document.createElement("tr");for(const value of [trade.signal,fmt(trade.entry_price),fmt(trade.exit_price),fmt(trade.pnl),trade.exit_reason])cell(tr,value);tbody.appendChild(tr)}
+ }catch(e){showBacktestError(e.message);$("#btStatus").textContent="Backtest did not complete."}
+ finally{b.disabled=false}
+}
 async function lookupMarkets(){const b=$("#lookupMarkets");b.disabled=true;showError("");try{const p=new URLSearchParams({exchange:$("#exchange").value,market_type:$("#type").value,search:($("#symbols").value.split("/")[0]||"").trim().toUpperCase(),limit:"50"});const data=await getJSON("/api/markets?"+p);const select=$("#available");select.replaceChildren();const option=document.createElement("option");option.value="";option.textContent=data.markets.length?"Select a verified market symbol":"No matching active instruments";select.appendChild(option);for(const market of data.markets){const item=document.createElement("option");item.value=market.symbol;item.textContent=market.symbol+" · "+market.type+(market.settle?" · settles "+market.settle:"");select.appendChild(item)}}catch(e){showError(e.message)}finally{b.disabled=false}}
 $("#available").addEventListener("change",()=>{if($("#available").value)$("#symbols").value=$("#available").value});
 $("#lookupMarkets").addEventListener("click",lookupMarkets);
+$("#btDatasets").addEventListener("change",()=>{
+ const value=$("#btDatasets").value;if(!value)return;
+ const dataset=JSON.parse(value);
+ $("#btExchange").value=dataset.exchange;
+ $("#btType").value=dataset.market_type;
+ $("#btTimeframe").value=dataset.timeframe;
+ if(dataset.symbol)$("#btSymbol").value=dataset.symbol;
+ else $("#historyInfo").textContent="Complex instrument identifier: "+dataset.stored_symbol+". Enter the exact original CCXT symbol manually.";
+ if(dataset.symbol)checkHistory();
+});
+$("#btSource").addEventListener("change",()=>{$("#archiveControls").style.display=$("#btSource").value==="history"?"block":"none"});
+$("#findHistory").addEventListener("click",findSavedHistory);
+$("#checkHistory").addEventListener("click",checkHistory);
 $("#scan").addEventListener("click",scan);$("#backtest").addEventListener("click",backtest);$("#exchange").addEventListener("change",()=>{if($("#exchange").value==="krakenfutures"){$("#type").value="swap";$("#symbols").value="SOL/USD:USD"}else if($("#exchange").value==="kraken"){$("#type").value="spot";$("#symbols").value="BTC/USD,ETH/USD,SOL/USD"}else $("#symbols").value="BTC/USDT,ETH/USDT,SOL/USDT";$("#available").replaceChildren()});$("#type").addEventListener("change",()=>{if($("#type").value==="swap")$("#symbols").value="BTC/USDT:USDT,ETH/USDT:USDT"});scan();
+findSavedHistory();
 </script></body></html>
