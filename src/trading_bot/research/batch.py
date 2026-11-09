@@ -79,6 +79,13 @@ def run_batch_research(
             if not trades.empty and "score" in trades.columns
             else 0.0
         )
+        strategy_mix = ""
+        if not trades.empty and "strategy" in trades.columns:
+            counts = trades["strategy"].value_counts()
+            strategy_mix = ",".join(
+                f"{name}:{int(count)}"
+                for name, count in counts.items()
+            )
 
         row.update(
             {
@@ -96,6 +103,7 @@ def run_batch_research(
                 "average_r": average_r,
                 "median_score": median_score,
                 "strategies": ",".join(strategy_names),
+                "strategy_mix": strategy_mix,
                 "error": "",
             }
         )
