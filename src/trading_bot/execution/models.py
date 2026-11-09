@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 import pandas as pd
 
@@ -28,7 +29,7 @@ TERMINAL_ORDER_STATUSES = frozenset(
 @dataclass(frozen=True)
 class ExchangeOrderSnapshot:
     external_order_id: str
-    client_order_id: str
+    client_order_id: str | None
     status: ManagedOrderStatus
     filled_amount: float
     average_price: float | None = None
@@ -54,6 +55,7 @@ class ManagedOrder:
     created_at: pd.Timestamp
     updated_at: pd.Timestamp
     last_error: str | None = None
+    params: dict[str, Any] | None = None
 
     @property
     def remaining_amount(self) -> float:
@@ -71,3 +73,37 @@ class OrderEvent:
     status: ManagedOrderStatus
     occurred_at: pd.Timestamp
     message: str
+
+
+@dataclass(frozen=True)
+class ExecutionControlState:
+    armed: bool
+    halted: bool
+    halt_reason: str
+    updated_by: str
+    updated_at: pd.Timestamp
+
+    @property
+    def locally_enabled(self) -> bool:
+        return self.armed and not self.halted
+
+
+@dataclass(frozen=True)
+class ReconciliationReport:
+    local_checked: int
+    updated: int
+    unchanged: int
+    missing_on_exchange: int
+    orphaned_exchange_orders: int
+    errors: int
+    orphaned_client_order_ids: tuple[str, ...] = ()
+    error_messages: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class KillSwitchReport:
+    halted: bool
+    cancelled_orders: int
+    skipped_orders: int
+    errors: int
+    error_messages: tuple[str, ...] = ()
