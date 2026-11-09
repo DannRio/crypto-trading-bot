@@ -8,7 +8,7 @@ A Python engine for scanning crypto markets, producing rule-qualified trade setu
 - OHLCV normalization and quality validation.
 - EMA 50/200, RSI 14, ATR 14, and volume baseline.
 - Trend/range regime detection plus basic market structure.
-- Trend-continuation setup scoring: CONFIRMED, FORMING, or NO_TRADE.
+- Strategy registry with trend-continuation, breakout/retest, and range mean-reversion candidates.
 - Risk-defined trade plans with entry zone, stop, TP1, TP2, size, notional, and actual account risk.
 - Multi-symbol scanning and ranking.
 - Configurable higher-timeframe regime confirmation.
@@ -273,3 +273,42 @@ Alert behavior:
 - local alert state is stored under `data/alerts/` and ignored by Git.
 
 Webhook URLs are supplied at runtime or through environment variables and are not stored in the repository.
+
+
+## Strategy variants
+
+The decision engine now has a strategy registry. **Trend continuation remains the default production/research candidate.** The other strategies are opt-in research candidates and are not assumed profitable.
+
+Available strategy names:
+
+- `trend_continuation` — existing trend-following setup scorer.
+- `breakout_retest` — looks for a recent break of structure followed by a controlled retest/hold.
+- `range_mean_reversion` — only activates in RANGE regimes near support/resistance with reversal confirmation.
+
+Scan one strategy:
+
+~~~powershell
+python main.py --exchange kucoin --market-type spot --auto-universe --timeframe 15m --confirm-timeframes 1h,4h --strategies breakout_retest
+~~~
+
+Evaluate multiple candidates and let the decision engine select the highest-qualified setup:
+
+~~~powershell
+python main.py --strategies trend_continuation,breakout_retest,range_mean_reversion
+~~~
+
+Research candidates independently:
+
+~~~powershell
+crypto-research backtest --exchange kucoin --market-type spot --symbols BTC/USDT,ETH/USDT,SOL/USDT --timeframes 1h --strategies breakout_retest --export data/processed/breakout_retest.csv
+~~~
+
+Or compare candidate selection behavior:
+
+~~~powershell
+crypto-research backtest --exchange kucoin --market-type spot --symbols BTC/USDT,ETH/USDT,SOL/USDT --timeframes 1h --strategies trend_continuation,breakout_retest,range_mean_reversion --export data/processed/multi_strategy.csv
+~~~
+
+Historical trades record the selected strategy, and batch output includes the resulting strategy mix. Paper orders/trades also persist strategy identity. Existing SQLite paper journals are migrated in place by adding the strategy column.
+
+Adding a strategy to the registry does **not** promote it to live use. Each candidate still needs multi-year, out-of-sample, walk-forward and paper validation.
