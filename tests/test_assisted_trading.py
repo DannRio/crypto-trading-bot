@@ -200,7 +200,9 @@ def test_rejection_is_terminal_for_approval_workflow(tmp_path):
         [confirmed_result()],
         now=pd.Timestamp("2026-01-01T10:10:00Z"),
     )
-    intent = service.pending()[0]
+    intent = service.pending(
+        now=pd.Timestamp("2026-01-01T10:10:00Z")
+    )[0]
 
     rejected = service.reject(
         intent.intent_id,
