@@ -73,7 +73,12 @@ def assess_history_coverage(
     delta = timeframe_to_milliseconds(timeframe)
     start_ms = int(first.timestamp() * 1000)
     end_ms = int(last.timestamp() * 1000)
-    first_expected_ms = ((start_ms + delta - 1) // delta) * delta
+    # CCXT weekly candles are anchored to Monday 00:00 UTC, rather than
+    # the Thursday 1970-01-01 Unix epoch.
+    origin_ms = 4 * 86_400_000 if timeframe.endswith("w") else 0
+    first_expected_ms = (
+        ((start_ms - origin_ms + delta - 1) // delta) * delta + origin_ms
+    )
     expected = max(0, (end_ms - first_expected_ms + delta - 1) // delta)
     if expected <= 0:
         raise ValueError("Requested period contains no full candle timestamps.")
@@ -85,7 +90,10 @@ def assess_history_coverage(
         actual = actual.sort_values().unique()
         actual = pd.DatetimeIndex(actual)
     in_range = actual[(actual >= first) & (actual < last)]
-    aligned = all(int(item.timestamp() * 1000) % delta == 0 for item in in_range)
+    aligned = all(
+        (int(item.timestamp() * 1000) - origin_ms) % delta == 0
+        for item in in_range
+    )
     inside_count = len(in_range)
     missing = max(0, expected - inside_count)
     complete = (
@@ -308,3 +316,70 @@ def download_history(
         data=data,
     )
     return data
+
+
+def import_history_csv(
+    file_path: str | Path,
+    start,
+    end,
+    symbol: str,
+    timeframe: str,
+    exchange_id: str,
+    market_type: str,
+    store: HistoricalDataStore | None = None,
+    strict_coverage: bool = True,
+) -> HistoryCoverage:
+    """Import a locally obtained, six-column CSV after strict validation.
+
+    Required headers: timestamp, open, high, low, close, volume. Timestamp
+    accepts ISO-8601 UTC, Unix seconds or Unix milliseconds. The CSV's source
+    and market classification must be independently verified by the user.
+    """
+    from trading_bot.data.validation import validate_ohlcv
+
+    path = Path(file_path)
+    frame = pd.read_csv(path)
+    frame.columns = [str(column).strip().lower() for column in frame.columns]
+    missing = set(OHLCV_COLUMNS) - set(frame.columns)
+    if missing:
+        raise ValueError(f"CSV missing OHLCV columns: {sorted(missing)}")
+    frame = frame[OHLCV_COLUMNS].copy()
+    if frame.empty:
+        raise ValueError("CSV contains no candles.")
+
+    raw_time = frame["timestamp"]
+    numeric = pd.to_numeric(raw_time, errors="coerce")
+    if numeric.notna().all():
+        # Milliseconds and seconds are the standard CCXT / exchange formats.
+        unit = "ms" if numeric.abs().median() >= 100_000_000_000 else "s"
+        frame["timestamp"] = pd.to_datetime(
+            numeric, unit=unit, utc=True, errors="coerce"
+        )
+    else:
+        frame["timestamp"] = pd.to_datetime(
+            raw_time, utc=True, errors="coerce"
+        )
+    for column in ("open", "high", "low", "close", "volume"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    if frame.isna().any().any():
+        raise ValueError("CSV contains missing or invalid timestamps/numbers.")
+    if not frame["timestamp"].is_unique:
+        raise ValueError("CSV contains duplicate timestamps.")
+    frame = frame.sort_values("timestamp").reset_index(drop=True)
+    quality = validate_ohlcv(frame, timeframe=timeframe, min_rows=1)
+    if not quality.valid:
+        raise ValueError("CSV has invalid OHLCV data: " + "; ".join(quality.issues))
+
+    report = assess_history_coverage(frame, start, end, timeframe)
+    if strict_coverage and not report.complete:
+        raise IncompleteHistoryError(
+            f"Imported CSV does not cover requested history: {report.summary()}."
+        )
+    first, last = _utc_timestamp(start), _utc_timestamp(end)
+    frame = frame.loc[
+        (frame["timestamp"] >= first) & (frame["timestamp"] < last)
+    ].copy()
+    (store or HistoricalDataStore()).upsert(
+        exchange_id, market_type, symbol, timeframe, frame
+    )
+    return report
