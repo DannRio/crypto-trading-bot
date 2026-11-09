@@ -52,6 +52,10 @@ class ManagedLiveBrokerAdapter(BrokerAdapter):
         self.exchange_id = exchange_id
         self.market_type = market_type
         self.store = store
+        self.store.bind_execution_context(
+            exchange_id=exchange_id,
+            market_type=market_type,
+        )
         self.guard = guard
         self._now_fn = now_fn or (
             lambda: pd.Timestamp.now(tz="UTC")
