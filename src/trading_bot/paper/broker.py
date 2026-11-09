@@ -877,7 +877,7 @@ class PaperBroker:
                 and high >= effective_stop
             )
 
-        if stop_after_tp1 and hit_tp2:
+        if stop_after_tp1:
             closed.append(
                 self._close_position(
                     key,
