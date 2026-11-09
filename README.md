@@ -323,3 +323,58 @@ terminal where Uvicorn runs for the traceback. The UI now distinguishes
 missing datasets from errors in simulation code. The read-only endpoints
 `/api/history/datasets` and `/api/history/check` can diagnose path
 mismatches without contacting an exchange.
+
+
+## Interactive Strategy Diagnostics dashboard
+
+Launch the read-only web app from your repository root:
+
+```powershell
+git fetch origin
+git switch feature/strategy-diagnostics-v1
+python -m pip install -e ".[dev]"
+python -m pytest
+python -m uvicorn trading_bot.web.app:app --host 127.0.0.1 --port 8000
+```
+
+Open **http://127.0.0.1:8000/diagnostics** or follow **Open Strategy
+Diagnostics** from the market scanner home page. If port 8000 is already
+in use, stop the old Uvicorn process or run on port `8001` and adjust
+the browser URL accordingly.
+
+The page reads the same local `data/history/` CSV files as
+`crypto-research backtest`. Click **Find saved history**, select
+`kucoin · spot · BTC/USDT · 1h`, and run the diagnostics. Change
+starting equity, risk, minimum score, fees and slippage to *investigate*,
+but do not optimize these parameters against the 2025 test period.
+No exchange API, credentials or live orders are required.
+
+The dashboard provides:
+- **Annual return bars**, computed from a *continuous* candle-close
+  marked-to-market equity curve. Capital is not reset between years.
+- **Equity/drawdown charts**, downsampled to retain important extrema
+  and interactive on hover. Selecting a year zooms the chart.
+- **Score and market-regime buckets**, showing trade counts, net P&L,
+  win rate and average R.
+- **Trade explorer** with filters for year, direction, entry regime,
+  setup-score bucket, outcome and exit reason; sorting, pagination and
+  CSV export. Filters do not rerun or optimize the strategy.
+- **Risk caveats:** A filtered subset's total net trade P&L is NOT its
+  own simulated portfolio return. Trade year is the *exit* year.
+  The annual equity return includes marked P&L on open positions.
+  The annual drawdown indicator is the worst drawdown from the global
+  equity peak observed in that year, not an independently reset
+  within-year drawdown.
+
+The API endpoint is `GET /api/diagnostics`, using the selected
+exchange, market type, symbol, timeframe and risk/cost assumptions.
+It refuses missing or invalid data and caps requests at 150,000 candles.
+The dashboard computes diagnostics once per run and filters results
+locally. The result's equity curve is produced by the same
+`run_decision_backtest` engine as the research CLI.
+
+**Limits:** This remains a historical OHLC-based research simulator.
+The marked-equity timeline is at completed candle closes, not a
+tick-level execution ledger. It does not model funding, liquidation,
+full contract-size semantics, intrabar execution ordering or exact
+real market impact. Passing tests does not establish strategy edge.
