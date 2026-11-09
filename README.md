@@ -13,6 +13,7 @@ A Python engine for scanning crypto markets, producing rule-qualified trade setu
 - Multi-symbol scanning and ranking.
 - Configurable higher-timeframe regime confirmation.
 - Dynamic liquid-market discovery and ranking.
+- Persistent deduplicated scanner alerts.
 - Shared DecisionEngine used by both scanner and historical research.
 - Scanner-aligned backtester with fees, slippage, drawdown, win rate, profit factor, and R-multiples.
 - Paginated multi-year historical downloader and local dataset store.
@@ -243,3 +244,32 @@ Auto-universe selection:
 Optional spread filtering is a coarse liquidity screen only. Ticker bid/ask fields are not a replacement for order-book data and should not be used as the live execution spread model.
 
 The web dashboard exposes the same manual/auto universe choice and filters.
+
+
+## Scanner alerts
+
+Scanner results can emit structured alerts without coupling the strategy engine to a specific messaging platform.
+
+Example with console and JSONL sinks:
+
+~~~powershell
+python main.py --exchange kucoin --market-type spot --auto-universe --timeframe 15m --confirm-timeframes 1h,4h --alert-sinks console,jsonl --alert-cooldown-minutes 60
+~~~
+
+Generic webhook delivery:
+
+~~~powershell
+$env:TRADING_ALERT_WEBHOOK_URL="https://example.invalid/webhook"
+python main.py --alert-sinks webhook
+~~~
+
+Alert behavior:
+
+- CONFIRMED setups alert by default.
+- FORMING alerts are opt-in with `--alert-forming`.
+- scan failures can emit operational alerts.
+- a persistent SQLite ledger suppresses repeated identical alerts across process restarts.
+- console, JSONL and generic JSON webhook sinks are supported.
+- local alert state is stored under `data/alerts/` and ignored by Git.
+
+Webhook URLs are supplied at runtime or through environment variables and are not stored in the repository.
