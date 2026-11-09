@@ -11,8 +11,8 @@ A Python engine for scanning crypto markets, producing rule-qualified trade setu
 - Strategy registry with trend-continuation, breakout/retest, and range mean-reversion candidates.
 - Risk-defined trade plans with entry zone, stop, TP1, TP2, size, notional, and actual account risk.
 - Multi-symbol scanning and ranking.
-- Configurable higher-timeframe regime confirmation.
-- Dynamic liquid-market discovery and ranking.
+- Hierarchical multi-timeframe scanning: higher-timeframe regime gate, primary setup timeframe, optional lower-timeframe entry trigger.
+- Dynamic liquid-market discovery with liquidity, spread, leveraged/stable-base, and minimum-history quality gates.
 - Persistent deduplicated scanner alerts.
 - Shared DecisionEngine used by both scanner and historical research.
 - Scanner-aligned backtester with fees, slippage, drawdown, win rate, profit factor, and R-multiples.
@@ -406,3 +406,43 @@ Use a new journal if those locked assumptions need to change.
 The local web dashboard has a read-only continuous-paper section showing pending/open state, realized P&L, recent trades, checkpoints, and signal decisions. The dashboard does not start, stop, approve, or place orders.
 
 Stopping the daemon does not liquidate paper positions. That is intentional: restart behavior must resemble a persistent trading service rather than a disposable backtest.
+
+
+## Portfolio risk v2
+
+The continuous paper service now enforces restart-persistent portfolio safeguards before accepting new risk.
+
+Default limits:
+
+- maximum total open risk: 3% of equity
+- maximum per-symbol risk: 1.5%
+- maximum gross notional: 200% of equity
+- maximum correlated risk bucket: 2%
+- correlation threshold: 0.75
+- maximum daily loss: 2%
+- maximum weekly loss: 5%
+- maximum drawdown from peak equity: 10%
+- maximum open positions: 5
+- maximum pending orders: 5
+
+Daily, weekly, and drawdown breaches latch a portfolio risk halt. A halt cancels pending entry orders and blocks new positions; existing open positions continue to be managed by their existing stop/target rules rather than being force-liquidated.
+
+Correlation checks fail closed by default. If an existing exposure requires correlation data and enough aligned return history cannot be computed, the new order is rejected. The paper daemon can explicitly relax this with `--allow-missing-correlation-data`, but that should be treated as a research override rather than the production default.
+
+Inspect the persistent risk state:
+
+~~~powershell
+crypto-paper risk-status --journal data/paper/continuous_paper.db
+~~~
+
+A halted account must be reset intentionally:
+
+~~~powershell
+crypto-paper risk-reset --journal data/paper/continuous_paper.db --confirm RESET
+~~~
+
+The reset command refuses to act on stale risk state by default. Run the paper daemon once first so current marks/equity are evaluated, then reset only after the halt cause has been reviewed.
+
+The dashboard paper-service section also shows whether portfolio risk is OK or HALTED, the halt reason, last evaluated equity, and peak equity.
+
+The continuous paper service uses the same scanner hierarchy and market-quality gates as interactive scans: higher-timeframe regime confirmation, optional lower-timeframe entry confirmation, liquid-market filtering, spread filtering, and minimum-history preflight.
