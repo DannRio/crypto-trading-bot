@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 import pandas as pd
 
+from trading_bot.assisted import IntentStatus, IntentStore
 from trading_bot.backtesting import run_decision_backtest
 from trading_bot.data import get_ohlcv, validate_ohlcv
 from trading_bot.paper import PaperJournal
@@ -37,6 +38,12 @@ PAPER_JOURNAL_PATH = Path(
     os.getenv(
         "TRADING_PAPER_JOURNAL",
         "data/paper/continuous_paper.db",
+    )
+)
+ASSISTED_STORE_PATH = Path(
+    os.getenv(
+        "TRADING_ASSISTED_STORE",
+        "data/assisted/assisted.db",
     )
 )
 
@@ -192,6 +199,43 @@ def paper_status(
         journal.close()
 
 
+
+
+@app.get("/api/assisted/intents")
+def assisted_intents(
+    status: str = Query("ALL", max_length=30),
+    limit: int = Query(50, ge=1, le=100),
+):
+    normalized = status.upper()
+    if normalized == "ALL":
+        statuses = None
+    else:
+        try:
+            statuses = (IntentStatus(normalized),)
+        except ValueError as exc:
+            raise HTTPException(
+                422,
+                f"Unknown intent status: {status}",
+            ) from exc
+
+    store = IntentStore(ASSISTED_STORE_PATH)
+    try:
+        intents = store.list(
+            statuses=statuses,
+            limit=limit,
+        )
+        decisions = store.decisions(limit=limit)
+        return {
+            "store": str(ASSISTED_STORE_PATH),
+            "intents": _safe(intents),
+            "decisions": _safe(decisions),
+            "execution_enabled": False,
+            "approval_surface": "CLI_ONLY",
+        }
+    finally:
+        store.close()
+
+
 @app.get("/api/scan")
 def scan(
     exchange: str = Query("kraken", max_length=30),
@@ -284,6 +328,9 @@ def scan(
             "symbol": result.symbol,
             "status": result.assessment.status.value if result.assessment else "ERROR",
             "signal": result.assessment.signal.value if result.assessment else "NO_TRADE",
+            "signal_time": _safe(
+                getattr(result, "signal_time", None)
+            ),
             "score": result.score,
             "strategy": (
                 getattr(
