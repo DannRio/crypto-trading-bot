@@ -194,3 +194,99 @@ crypto-paper compare --exchange kucoin --market-type spot --symbol BTC/USDT --ti
 ~~~
 
 The paper broker models pending-entry expiry, fees, slippage, stop/TP2 exits, duplicate exposure protection, portfolio open-risk limits, position tracking, realized/unrealized P&L, and persistent orders/trades. Local paper state is stored under data/paper/ and is ignored by Git.
+
+
+## Futures selection and verified symbols
+
+**Kraken spot is not Kraken Futures.** In CCXT the venue IDs are
+`kraken` (spot) and `krakenfutures` (derivatives). You must select
+`swap` for perpetual contracts or `future` for delivery-dated contracts,
+then select a symbol actually returned by that venue's market metadata.
+`SOL/USDT` is *not* automatically a futures instrument.
+
+Open the dashboard and choose exchange and market type, then click
+**Find valid markets**. This requests `/api/markets`, which lists actual
+active CCXT markets of that type; select a returned symbol before scanning.
+Incorrect venue/type/symbol combinations are rejected rather than
+silently interpreted as spot.
+
+**Futures research limitation:** the current OHLCV simulator does not
+model exchange-specific contract multipliers, margin, funding, inverse
+settlement, liquidation or order-book execution. Its futures P&L is a
+synthetic base-unit calculation; do not interpret it as an executable
+futures account balance or deploy it with money.
+
+## Verify full multi-year historical coverage
+
+The downloader now rejects partial history **by default**. Many exchange
+APIs retain only a limited OHLCV lookback; asking for three years does
+not prove three years were returned. It validates every requested bar
+timestamp and refuses to save an incomplete dataset:
+
+```powershell
+crypto-research download --exchange kucoin --market-type spot --symbols BTC/USDT --timeframes 1h --start 2023-01-01 --end 2026-01-01
+```
+
+If the exchange cannot deliver that history, the command exits nonzero
+with the actual candle count and dates. Find an authoritative archival
+data source for older candles before proceeding. Only if you understand
+the coverage gaps, use `--allow-partial` to save a partial dataset; it
+will be **explicitly marked PARTIAL**. Avoid reporting partial datasets
+as three-year results.
+
+For an actual local dataset covering at least three years:
+
+```powershell
+crypto-research backtest --exchange kucoin --market-type spot --symbols BTC/USDT --timeframes 1h --min-history-years 3 --export data/processed/three_year_summary.csv
+```
+
+The summary exposes `span_days` and `missing_intervals`. If the
+requested duration isn't present, the dataset status is
+`INSUFFICIENT_HISTORY`; if internal candles are missing it reports
+`GAPS_PRESENT`. **The time-span requirement checks length, not strategy
+profitability or data provenance.**
+
+Historical-data research, out-of-sample tests, and walk-forward stability
+tests are available through `crypto-research`. Historical datasets are
+stored locally under `data/history/`, not in this public repository.
+
+In the browser dashboard, set **Data source → Local multi-year data**
+and choose the same exchange, market type, symbol and timeframe as the
+saved dataset. The result includes the **actual first and last candle
+dates**, unlike quick exchange backtests limited to recent candles.
+
+## Execution verification
+
+The shared `DecisionEngine` feeds both the scanner and research
+backtester. The backtest uses completed candles only, a resting reference
+entry that must be touched on a subsequent candle, a conservative
+stop-first assumption if stop and target touch during the same OHLC bar,
+and adverse opening-gap fills for existing positions. Modeled 1R sizing
+now includes entry/exit fees and stop slippage. Real stops may slip more
+than modeled, and a gap may lose more than 1R.
+
+The test suite covers exchange market identity, incomplete data
+detection, local history, multi-year chronological train/validation/test
+and walk-forward windows, stop gaps, and trade-risk accounting.
+Automated unit tests are not evidence of profitable strategies.
+
+
+### When exchange APIs do not provide old candles
+
+Import a **verified** archive CSV from a legitimate market-data provider
+instead of assuming pagination obtained the requested years:
+
+```powershell
+crypto-research import-csv --exchange kucoin --market-type spot --symbol BTC/USDT --timeframe 1h --file C:\\data\\btc_1h.csv --start 2023-01-01 --end 2026-01-01
+```
+
+Required CSV columns (case-insensitive): `timestamp,open,high,low,close,volume`.
+Timestamp may be an ISO-8601 datetime, Unix seconds or Unix milliseconds.
+The importer validates OHLC values, timestamp uniqueness, and full candle
+coverage, then writes into the same local `data/history/` store. Use
+`--allow-partial` only to intentionally accept a shorter/gapped archive.
+
+**Verify externally** that the file genuinely represents the chosen
+exchange and spot/swap/future instrument, uses trading-price candles,
+has unadjusted volumes and is not a mixture of venues. CSV imports
+cannot cryptographically prove provenance.

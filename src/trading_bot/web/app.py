@@ -15,13 +15,21 @@ from fastapi.responses import FileResponse
 import pandas as pd
 
 from trading_bot.backtesting import run_decision_backtest
-from trading_bot.data import get_ohlcv, validate_ohlcv
+from trading_bot.data import (
+    HistoricalDataStore,
+    get_ohlcv,
+    validate_ohlcv,
+)
+from trading_bot.exchanges.ccxt_client import (
+    CCXTClient,
+    validate_exchange_selection,
+)
 from trading_bot.scanner import MarketScanner
 
 log = logging.getLogger(__name__)
 app = FastAPI(title="Trading Bot — Read-only Research Dashboard", version="0.1.0")
 
-EXCHANGES = {"kraken", "kucoin", "binance", "bybit", "okx", "coinbase"}
+EXCHANGES = {"kraken", "krakenfutures", "kucoin", "binance", "bybit", "okx", "coinbase"}
 MARKET_TYPES = {"spot", "swap", "future"}
 TIMEFRAMES = {"5m", "15m", "1h", "4h", "1d"}
 SYMBOL_RE = re.compile(r"^[A-Z0-9._-]+/[A-Z0-9._-]+(?::[A-Z0-9._-]+)?$")
@@ -52,6 +60,10 @@ def _validate_exchange(exchange: str, market_type: str, timeframe: str):
         raise HTTPException(422, "Unsupported market type.")
     if timeframe not in TIMEFRAMES:
         raise HTTPException(422, "Unsupported timeframe.")
+    try:
+        validate_exchange_selection(exchange, market_type)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
 
 
 def _validate_symbol(symbol: str) -> str:
@@ -76,6 +88,25 @@ def index():
 @app.get("/api/health")
 def health():
     return {"mode": "READ_ONLY", "live_execution": False, "paper_execution": False}
+
+
+
+@app.get("/api/markets")
+def markets(
+    exchange: str = Query("kraken", max_length=30),
+    market_type: str = Query("spot"),
+    search: str = Query("", max_length=30),
+    limit: int = Query(25, ge=1, le=50),
+):
+    """Discover actual CCXT market symbols and metadata before choosing a symbol."""
+    _validate_exchange(exchange, market_type, "1h")
+    try:
+        client = CCXTClient(exchange_id=exchange, market_type=market_type)
+        result = client.available_markets(search=search, limit=limit)
+    except Exception:
+        log.exception("Could not discover markets")
+        raise HTTPException(502, "Market discovery unavailable for this venue.")
+    return {"exchange": exchange, "market_type": market_type, "markets": result}
 
 
 @app.get("/api/scan")
@@ -132,18 +163,31 @@ def backtest(
     limit: int = Query(720, ge=250, le=1000),
     equity: float = Query(10000.0, gt=0, le=100_000_000),
     risk_percent: float = Query(1.0, gt=0, le=5),
+    min_score: int = Query(70, ge=0, le=100),
+    source: str = Query("live", pattern="^(live|history)$"),
     fee_rate: float = Query(0.001, ge=0, le=0.05),
     slippage_bps: float = Query(5.0, ge=0, le=500),
 ):
     _validate_exchange(exchange, market_type, timeframe)
     symbol = _validate_symbol(symbol)
     try:
-        candles = get_ohlcv(
-            symbol=symbol, timeframe=timeframe, limit=limit,
-            exchange_id=exchange, market_type=market_type,
-        )
-        # Consistent with the scanner: conservatively omit the final candle.
-        closed = candles.iloc[:-1].copy()
+        if source == "history":
+            closed = HistoricalDataStore().load(
+                exchange, market_type, symbol, timeframe
+            )
+            if closed.empty:
+                raise HTTPException(
+                    422,
+                    "No local history found. Use crypto-research download "
+                    "from the terminal first.",
+                )
+        else:
+            candles = get_ohlcv(
+                symbol=symbol, timeframe=timeframe, limit=limit,
+                exchange_id=exchange, market_type=market_type,
+            )
+            # Consistent with the scanner: conservatively omit the final candle.
+            closed = candles.iloc[:-1].copy()
         quality = validate_ohlcv(closed, timeframe=timeframe, min_rows=220)
         if not quality.valid:
             raise HTTPException(422, "Not enough valid closed candles for backtesting.")
@@ -151,7 +195,7 @@ def backtest(
             closed,
             initial_equity=equity,
             risk_percent=risk_percent / 100,
-            min_confirmed_score=70,
+            min_confirmed_score=min_score,
             fee_rate=fee_rate,
             slippage_bps=slippage_bps,
             allow_short=market_type != "spot",
@@ -162,9 +206,18 @@ def backtest(
         log.exception("Backtest failed")
         raise HTTPException(502, "Market data or backtesting failed.")
     return {
-        "symbol": symbol, "exchange": exchange, "timeframe": timeframe,
+        "symbol": symbol, "exchange": exchange, "market_type": market_type,
+        "timeframe": timeframe, "source": source,
         "data_rows": len(closed),
-        "assumptions": {"fee_rate_per_side": fee_rate, "slippage_bps_per_side": slippage_bps},
+        "data_start": closed["timestamp"].min().isoformat(),
+        "data_end": closed["timestamp"].max().isoformat(),
+        "data_warnings": _safe(quality.warnings),
+        "assumptions": {
+            "fee_rate_per_side": fee_rate,
+            "slippage_bps_per_side": slippage_bps,
+            "min_confirmed_score": min_score,
+            "shorts_enabled": market_type != "spot",
+        },
         "metrics": _safe({
             "initial_equity": result.initial_equity,
             "final_equity": result.final_equity,
@@ -176,5 +229,5 @@ def backtest(
             "average_pnl": result.average_pnl,
         }),
         "recent_trades": _safe(result.trades.tail(10).to_dict("records")),
-        "warning": "Quick research only. Uses the same decision rules as the scanner; OHLC fills still omit funding, liquidation and exchange-specific matching.",
+        "warning": "Scanner-aligned research. OHLC fills omit funding, liquidation, contract multipliers and exchange-specific execution. Reported derivatives P&L uses synthetic base-quantity sizing.",
     }
