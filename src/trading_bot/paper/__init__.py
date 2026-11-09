@@ -17,6 +17,11 @@ from trading_bot.paper.risk import (
     PortfolioRiskManager,
     RiskCheck,
 )
+from trading_bot.paper.service import (
+    PaperServiceConfig,
+    PaperServiceRunReport,
+    PaperTradingService,
+)
 
 __all__ = [
     "PaperAccountSnapshot",
@@ -26,7 +31,10 @@ __all__ = [
     "PaperOrder",
     "PaperOrderStatus",
     "PaperPosition",
+    "PaperServiceConfig",
+    "PaperServiceRunReport",
     "PaperTrade",
+    "PaperTradingService",
     "PortfolioRiskConfig",
     "PortfolioRiskManager",
     "RiskCheck",

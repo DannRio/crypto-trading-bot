@@ -7,6 +7,7 @@ from dataclasses import asdict, is_dataclass
 from enum import Enum
 import logging
 import math
+import os
 from pathlib import Path
 import re
 
@@ -16,6 +17,7 @@ import pandas as pd
 
 from trading_bot.backtesting import run_decision_backtest
 from trading_bot.data import get_ohlcv, validate_ohlcv
+from trading_bot.paper import PaperJournal
 from trading_bot.scanner import (
     DynamicMarketUniverse,
     MarketScanner,
@@ -31,6 +33,12 @@ MARKET_TYPES = {"spot", "swap", "future"}
 TIMEFRAMES = {"5m", "15m", "1h", "4h", "1d"}
 SYMBOL_RE = re.compile(r"^[A-Z0-9._-]+/[A-Z0-9._-]+(?::[A-Z0-9._-]+)?$")
 PAGE = Path(__file__).with_name("index.html")
+PAPER_JOURNAL_PATH = Path(
+    os.getenv(
+        "TRADING_PAPER_JOURNAL",
+        "data/paper/continuous_paper.db",
+    )
+)
 
 
 def _safe(value):
@@ -127,6 +135,61 @@ def index():
 @app.get("/api/health")
 def health():
     return {"mode": "READ_ONLY", "live_execution": False, "paper_execution": False}
+
+
+
+
+@app.get("/api/paper/status")
+def paper_status(
+    limit: int = Query(20, ge=1, le=100),
+):
+    journal = PaperJournal(PAPER_JOURNAL_PATH)
+    try:
+        active = journal.active_orders()
+        all_trades = journal.all_trades()
+        trades = journal.trades(limit=limit)
+        checkpoints = journal.checkpoints()
+        signals = journal.signal_events(limit=limit)
+
+        pending = (
+            active[active["status"] == "PENDING"]
+            if not active.empty
+            else active
+        )
+        filled = (
+            active[active["status"] == "FILLED"]
+            if not active.empty
+            else active
+        )
+        realized_pnl = (
+            float(all_trades["net_pnl"].sum())
+            if not all_trades.empty
+            else 0.0
+        )
+
+        return {
+            "journal": str(PAPER_JOURNAL_PATH),
+            "metadata": journal.metadata(),
+            "summary": {
+                "pending_orders": len(pending),
+                "open_positions": len(filled),
+                "realized_net_pnl": realized_pnl,
+            },
+            "active_orders": _safe(
+                active.to_dict("records")
+            ),
+            "recent_trades": _safe(
+                trades.to_dict("records")
+            ),
+            "checkpoints": _safe(
+                checkpoints.to_dict("records")
+            ),
+            "recent_signals": _safe(
+                signals.to_dict("records")
+            ),
+        }
+    finally:
+        journal.close()
 
 
 @app.get("/api/scan")

@@ -71,6 +71,11 @@
 
 ## Phase 8 — Paper Trading
 - [x] Simulated broker
+- [x] Continuous restart-safe paper service
+- [x] Per-market closed-candle checkpoints
+- [x] Persistent signal deduplication
+- [x] Broker state and P&L recovery after restart
+- [x] Read-only web paper-service status
 - [x] Position tracking
 - [x] Realized/unrealized P&L
 - [x] Persistent SQLite trade journal

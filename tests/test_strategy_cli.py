@@ -59,3 +59,38 @@ def test_research_cli_accepts_parameter_experiment_command():
     assert args.command == "experiment"
     assert args.train_end == "2025-01-01"
     assert args.max_combinations == 50
+
+
+
+def test_paper_cli_accepts_continuous_daemon_options():
+    args = paper_parser().parse_args(
+        [
+            "daemon",
+            "--exchange",
+            "kucoin",
+            "--market-type",
+            "spot",
+            "--auto-universe",
+            "--quote-currencies",
+            "USDT,USDC",
+            "--max-markets",
+            "12",
+            "--timeframe",
+            "15m",
+            "--confirm-timeframes",
+            "1h,4h",
+            "--strategies",
+            "trend_continuation,breakout_retest",
+            "--interval-seconds",
+            "30",
+            "--once",
+        ]
+    )
+
+    assert args.command == "daemon"
+    assert args.auto_universe is True
+    assert args.quote_currencies == "USDT,USDC"
+    assert args.max_markets == 12
+    assert args.confirm_timeframes == "1h,4h"
+    assert args.interval_seconds == 30
+    assert args.once is True

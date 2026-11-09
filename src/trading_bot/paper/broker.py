@@ -152,6 +152,122 @@ class PaperBroker:
             reserved_risk=self.reserved_risk(),
         )
 
+
+
+    def restore_from_journal(self) -> dict[str, int]:
+        if self.journal is None:
+            raise ValueError(
+                "A PaperJournal is required to restore broker state."
+            )
+
+        self.orders.clear()
+        self.positions.clear()
+        self.completed_trades.clear()
+        self.last_prices.clear()
+
+        trades = self.journal.all_trades()
+        self.realized_net_pnl = (
+            float(trades["net_pnl"].sum())
+            if not trades.empty
+            else 0.0
+        )
+        self.fees_paid = (
+            float(trades["fees"].sum())
+            if not trades.empty
+            else 0.0
+        )
+
+        active = self.journal.active_orders()
+        for row in active.itertuples(index=False):
+            status = PaperOrderStatus(str(row.status))
+            filled_at = (
+                _timestamp(row.filled_at)
+                if pd.notna(row.filled_at)
+                else None
+            )
+            closed_at = (
+                _timestamp(row.closed_at)
+                if pd.notna(row.closed_at)
+                else None
+            )
+
+            order = PaperOrder(
+                order_id=str(row.order_id),
+                symbol=str(row.symbol),
+                timeframe=str(row.timeframe),
+                signal=Signal(str(row.signal)),
+                created_at=_timestamp(row.created_at),
+                reference_entry=float(row.reference_entry),
+                stop_loss=float(row.stop_loss),
+                take_profit_1=float(row.take_profit_1),
+                take_profit_2=float(row.take_profit_2),
+                position_size=float(row.position_size),
+                planned_risk=float(row.planned_risk),
+                score=int(row.score),
+                regime=str(row.regime),
+                strategy=str(row.strategy),
+                bars_remaining=int(row.bars_remaining),
+                status=status,
+                filled_at=filled_at,
+                fill_price=(
+                    float(row.fill_price)
+                    if pd.notna(row.fill_price)
+                    else None
+                ),
+                entry_fee=float(row.entry_fee),
+                closed_at=closed_at,
+                exit_price=(
+                    float(row.exit_price)
+                    if pd.notna(row.exit_price)
+                    else None
+                ),
+                exit_reason=(
+                    str(row.exit_reason)
+                    if pd.notna(row.exit_reason)
+                    else None
+                ),
+            )
+            self.orders[order.order_id] = order
+
+            if status == PaperOrderStatus.FILLED:
+                if order.fill_price is None or order.filled_at is None:
+                    raise ValueError(
+                        "Persisted FILLED order is missing fill data: "
+                        f"{order.order_id}"
+                    )
+                risk_amount = (
+                    abs(order.fill_price - order.stop_loss)
+                    * order.position_size
+                )
+                self.positions[
+                    (order.symbol, order.timeframe)
+                ] = PaperPosition(
+                    order_id=order.order_id,
+                    symbol=order.symbol,
+                    timeframe=order.timeframe,
+                    signal=order.signal,
+                    entry_time=order.filled_at,
+                    entry_price=order.fill_price,
+                    stop_loss=order.stop_loss,
+                    take_profit_1=order.take_profit_1,
+                    take_profit_2=order.take_profit_2,
+                    position_size=order.position_size,
+                    risk_amount=risk_amount,
+                    entry_fee=order.entry_fee,
+                    score=order.score,
+                    regime=order.regime,
+                    strategy=order.strategy,
+                )
+                self.realized_net_pnl -= order.entry_fee
+                self.fees_paid += order.entry_fee
+
+        return {
+            "active_orders": len(active),
+            "open_positions": len(self.positions),
+            "completed_trades": len(trades),
+        }
+
+
     def submit_setup(
         self,
         symbol: str,

@@ -44,6 +44,37 @@ class PaperJournal:
                 exit_reason TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS paper_service_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS paper_service_checkpoints (
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                last_processed_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (symbol, timeframe)
+            );
+
+            CREATE TABLE IF NOT EXISTS paper_signal_events (
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                strategy TEXT NOT NULL,
+                signal TEXT NOT NULL,
+                signal_time TEXT NOT NULL,
+                action TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (
+                    symbol,
+                    timeframe,
+                    strategy,
+                    signal,
+                    signal_time
+                )
+            );
+
             CREATE TABLE IF NOT EXISTS paper_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 order_id TEXT NOT NULL,
@@ -211,6 +242,203 @@ class PaperJournal:
             self.connection,
             params=(limit,),
         )
+
+
+
+
+
+    def get_metadata(self, key: str) -> str | None:
+        row = self.connection.execute(
+            """
+            SELECT value
+            FROM paper_service_metadata
+            WHERE key = ?
+            """,
+            (key,),
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def set_metadata(
+        self,
+        key: str,
+        value,
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO paper_service_metadata (
+                key,
+                value
+            )
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value
+            """,
+            (key, str(value)),
+        )
+        self.connection.commit()
+
+    def metadata(self) -> dict[str, str]:
+        return {
+            str(key): str(value)
+            for key, value in self.connection.execute(
+                """
+                SELECT key, value
+                FROM paper_service_metadata
+                ORDER BY key
+                """
+            ).fetchall()
+        }
+
+
+    def active_orders(self) -> pd.DataFrame:
+        return pd.read_sql_query(
+            """
+            SELECT * FROM paper_orders
+            WHERE status IN ('PENDING', 'FILLED')
+            ORDER BY created_at ASC
+            """,
+            self.connection,
+        )
+
+    def all_trades(self) -> pd.DataFrame:
+        return pd.read_sql_query(
+            """
+            SELECT * FROM paper_trades
+            ORDER BY exit_time ASC
+            """,
+            self.connection,
+        )
+
+    def get_checkpoint(
+        self,
+        symbol: str,
+        timeframe: str,
+    ) -> pd.Timestamp | None:
+        row = self.connection.execute(
+            """
+            SELECT last_processed_at
+            FROM paper_service_checkpoints
+            WHERE symbol = ? AND timeframe = ?
+            """,
+            (symbol, timeframe),
+        ).fetchone()
+        if row is None:
+            return None
+        return pd.Timestamp(row[0])
+
+    def set_checkpoint(
+        self,
+        symbol: str,
+        timeframe: str,
+        timestamp,
+    ) -> None:
+        value = self._timestamp(timestamp)
+        now = pd.Timestamp.now(tz="UTC").isoformat()
+        self.connection.execute(
+            """
+            INSERT INTO paper_service_checkpoints (
+                symbol,
+                timeframe,
+                last_processed_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(symbol, timeframe) DO UPDATE SET
+                last_processed_at = excluded.last_processed_at,
+                updated_at = excluded.updated_at
+            """,
+            (symbol, timeframe, value, now),
+        )
+        self.connection.commit()
+
+    def signal_seen(
+        self,
+        symbol: str,
+        timeframe: str,
+        strategy: str,
+        signal: str,
+        signal_time,
+    ) -> bool:
+        row = self.connection.execute(
+            """
+            SELECT 1
+            FROM paper_signal_events
+            WHERE symbol = ?
+              AND timeframe = ?
+              AND strategy = ?
+              AND signal = ?
+              AND signal_time = ?
+            """,
+            (
+                symbol,
+                timeframe,
+                strategy,
+                signal,
+                self._timestamp(signal_time),
+            ),
+        ).fetchone()
+        return row is not None
+
+    def record_signal(
+        self,
+        symbol: str,
+        timeframe: str,
+        strategy: str,
+        signal: str,
+        signal_time,
+        action: str,
+        reason: str = "",
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT OR IGNORE INTO paper_signal_events (
+                symbol,
+                timeframe,
+                strategy,
+                signal,
+                signal_time,
+                action,
+                reason,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                symbol,
+                timeframe,
+                strategy,
+                signal,
+                self._timestamp(signal_time),
+                action,
+                reason,
+                pd.Timestamp.now(tz="UTC").isoformat(),
+            ),
+        )
+        self.connection.commit()
+
+    def checkpoints(self) -> pd.DataFrame:
+        return pd.read_sql_query(
+            """
+            SELECT * FROM paper_service_checkpoints
+            ORDER BY symbol, timeframe
+            """,
+            self.connection,
+        )
+
+    def signal_events(
+        self,
+        limit: int = 100,
+    ) -> pd.DataFrame:
+        return pd.read_sql_query(
+            """
+            SELECT * FROM paper_signal_events
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            self.connection,
+            params=(limit,),
+        )
+
 
     def close(self) -> None:
         self.connection.close()
