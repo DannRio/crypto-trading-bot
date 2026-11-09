@@ -1,6 +1,6 @@
-"""Read-only web API around the existing decision engine.
+"""Local research and dry-run assisted-trading API.
 
-No authenticated exchange access, private keys, order placement or execution.
+No authenticated exchange access, private keys, or live order placement.
 Bind locally (127.0.0.1); this development API has no user authentication.
 """
 from dataclasses import asdict, is_dataclass
@@ -14,7 +14,13 @@ import re
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 import pandas as pd
+from pydantic import BaseModel, Field
 
+from trading_bot.assisted import (
+    AssistedTradingService,
+    IntentStatus,
+    IntentStore,
+)
 from trading_bot.backtesting import run_decision_backtest
 from trading_bot.data import get_ohlcv, validate_ohlcv
 from trading_bot.paper import PaperJournal
@@ -26,7 +32,7 @@ from trading_bot.scanner import (
 from trading_bot.strategies import normalize_strategy_names
 
 log = logging.getLogger(__name__)
-app = FastAPI(title="Trading Bot — Read-only Research Dashboard", version="0.1.0")
+app = FastAPI(title="Trading Bot — Research & Assisted Dashboard", version="0.12.0")
 
 EXCHANGES = {"kraken", "kucoin", "binance", "bybit", "okx", "coinbase"}
 MARKET_TYPES = {"spot", "swap", "future"}
@@ -39,6 +45,33 @@ PAPER_JOURNAL_PATH = Path(
         "data/paper/continuous_paper.db",
     )
 )
+ASSISTED_DB_PATH = Path(
+    os.getenv(
+        "TRADING_ASSISTED_DB",
+        "data/assisted/assisted.db",
+    )
+)
+
+
+class StageIntentRequest(BaseModel):
+    exchange: str = "kraken"
+    market_type: str = "spot"
+    symbol: str
+    timeframe: str = "1h"
+    confirm_timeframes: list[str] = Field(default_factory=list)
+    entry_timeframe: str | None = None
+    limit: int = 500
+    equity: float = 10_000
+    risk_percent: float = 1.0
+    min_score: int = 70
+    strategies: list[str] = Field(
+        default_factory=lambda: ["trend_continuation"]
+    )
+
+
+class IntentDecisionRequest(BaseModel):
+    actor: str
+    note: str = ""
 
 
 def _safe(value):
@@ -337,6 +370,218 @@ def scan(
         "results": output,
         "live_execution": False,
     }
+
+
+
+
+@app.get("/api/assisted/intents")
+def assisted_intents(
+    status: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+):
+    store = IntentStore(ASSISTED_DB_PATH)
+    try:
+        statuses = None
+        if status:
+            try:
+                statuses = (IntentStatus(status.upper()),)
+            except ValueError as exc:
+                raise HTTPException(
+                    422,
+                    "Unsupported assisted intent status.",
+                ) from exc
+
+        intents = store.list(
+            statuses=statuses,
+            limit=limit,
+        )
+        return {
+            "mode": "DRY_RUN",
+            "live_execution": False,
+            "database": str(ASSISTED_DB_PATH),
+            "intents": _safe(intents),
+            "decisions": _safe(
+                store.decisions(limit=limit)
+            ),
+            "receipts": _safe(
+                store.execution_receipts(limit=limit)
+            ),
+        }
+    finally:
+        store.close()
+
+
+
+
+@app.post("/api/assisted/stage")
+def assisted_stage(request: StageIntentRequest):
+    _validate_exchange(
+        request.exchange,
+        request.market_type,
+        request.timeframe,
+    )
+    symbol = _validate_symbol(request.symbol)
+
+    if not 250 <= request.limit <= 1000:
+        raise HTTPException(422, "limit must be between 250 and 1000.")
+    if not 0 < request.equity <= 100_000_000:
+        raise HTTPException(422, "equity must be positive.")
+    if not 0 < request.risk_percent <= 5:
+        raise HTTPException(
+            422,
+            "risk_percent must be greater than 0 and <= 5.",
+        )
+    if not 0 <= request.min_score <= 100:
+        raise HTTPException(
+            422,
+            "min_score must be between 0 and 100.",
+        )
+
+    confirmation_timeframes = tuple(
+        value.strip()
+        for value in request.confirm_timeframes
+        if value.strip()
+    )
+    unsupported = [
+        value
+        for value in confirmation_timeframes
+        if value not in TIMEFRAMES
+    ]
+    if unsupported:
+        raise HTTPException(
+            422,
+            "Unsupported confirmation timeframe: "
+            + ", ".join(unsupported),
+        )
+
+    entry_timeframe = (
+        request.entry_timeframe.strip()
+        if request.entry_timeframe
+        else None
+    )
+    if entry_timeframe and entry_timeframe not in TIMEFRAMES:
+        raise HTTPException(422, "Unsupported entry timeframe.")
+
+    try:
+        strategy_names = normalize_strategy_names(
+            tuple(request.strategies)
+        )
+        scanner = MarketScanner(
+            exchange_id=request.exchange,
+            market_type=request.market_type,
+            timeframe=request.timeframe,
+            confirmation_timeframes=confirmation_timeframes,
+            entry_timeframe=entry_timeframe,
+            candle_limit=request.limit,
+            account_equity=request.equity,
+            risk_percent=request.risk_percent / 100,
+            min_confirmed_score=request.min_score,
+            strategy_names=strategy_names,
+        )
+        result = scanner.scan_symbol(symbol)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        log.exception("Assisted staging scan failed")
+        raise HTTPException(
+            502,
+            "Could not evaluate the requested market.",
+        ) from exc
+
+    store = IntentStore(ASSISTED_DB_PATH)
+    try:
+        service = AssistedTradingService(store)
+        try:
+            intent = service.build_intent(result)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+        created = store.queue(intent)
+        if not created:
+            existing = store.get_by_fingerprint(
+                intent.fingerprint
+            )
+            if existing is None:
+                raise HTTPException(
+                    409,
+                    "Matching intent already exists.",
+                )
+            intent = existing
+
+        return {
+            "created": created,
+            "mode": "DRY_RUN",
+            "live_execution": False,
+            "intent": _safe(intent),
+        }
+    finally:
+        store.close()
+
+
+
+
+@app.post("/api/assisted/{intent_id}/approve")
+def assisted_approve(
+    intent_id: str,
+    request: IntentDecisionRequest,
+):
+    if not request.actor.strip():
+        raise HTTPException(422, "Decision actor is required.")
+
+    store = IntentStore(ASSISTED_DB_PATH)
+    try:
+        service = AssistedTradingService(store)
+        try:
+            intent, receipt = service.approve(
+                intent_id,
+                actor=request.actor,
+                note=request.note,
+                execute=True,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+        return {
+            "mode": "DRY_RUN",
+            "live_execution": False,
+            "intent": _safe(intent),
+            "receipt": _safe(receipt),
+        }
+    finally:
+        store.close()
+
+
+@app.post("/api/assisted/{intent_id}/reject")
+def assisted_reject(
+    intent_id: str,
+    request: IntentDecisionRequest,
+):
+    if not request.actor.strip():
+        raise HTTPException(422, "Decision actor is required.")
+
+    store = IntentStore(ASSISTED_DB_PATH)
+    try:
+        service = AssistedTradingService(store)
+        try:
+            intent = service.reject(
+                intent_id,
+                actor=request.actor,
+                note=request.note,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+        return {
+            "mode": "DRY_RUN",
+            "live_execution": False,
+            "intent": _safe(intent),
+        }
+    finally:
+        store.close()
 
 
 @app.get("/api/backtest")

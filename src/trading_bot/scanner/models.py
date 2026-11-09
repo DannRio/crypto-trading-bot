@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+import pandas as pd
+
 from trading_bot.analysis import MarketStructure
 from trading_bot.data import DataQualityReport
 from trading_bot.planning import TradeSetup
@@ -25,6 +27,7 @@ class ScanResult:
     candidates: tuple[SetupAssessment, ...] = ()
     entry_timeframe: str | None = None
     entry_trigger: EntryTrigger | None = None
+    signal_time: pd.Timestamp | None = None
 
     @property
     def score(self) -> int:

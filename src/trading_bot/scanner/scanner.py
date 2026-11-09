@@ -252,6 +252,7 @@ class MarketScanner:
                 candidates=decision.candidates,
                 entry_timeframe=self.entry_timeframe,
                 entry_trigger=entry_trigger,
+                signal_time=data.iloc[-1]["timestamp"],
             )
         except Exception as exc:
             return ScanResult(
