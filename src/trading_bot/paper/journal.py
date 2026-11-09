@@ -366,6 +366,15 @@ class PaperJournal:
         )
         self.connection.commit()
 
+    def checkpoints(self) -> pd.DataFrame:
+        return pd.read_sql_query(
+            """
+            SELECT * FROM paper_service_checkpoints
+            ORDER BY symbol, timeframe
+            """,
+            self.connection,
+        )
+
     def signal_events(
         self,
         limit: int = 100,
