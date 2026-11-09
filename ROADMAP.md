@@ -65,7 +65,7 @@
 - [x] Trade-plan generation
 - [x] Rank results
 - [x] Multiple-timeframe scan
-- [ ] Alerts
+- [x] Persistent deduplicated alerts
 
 ## Phase 8 — Paper Trading
 - [x] Simulated broker
