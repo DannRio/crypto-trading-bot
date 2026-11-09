@@ -356,6 +356,10 @@ def test_managed_live_adapter_is_idempotent_and_attaches_protection(
     )
     store = OrderStore(tmp_path / "orders.db")
     guard = LiveExecutionGuard(store)
+    store.bind_execution_context(
+        exchange_id="kucoin",
+        market_type="spot",
+    )
     guard.arm(
         actor="Danny",
         confirmation="ARM_LIVE",
@@ -416,6 +420,10 @@ def test_partial_fill_reconciliation_updates_local_state(
     )
     store = OrderStore(tmp_path / "orders.db")
     guard = LiveExecutionGuard(store)
+    store.bind_execution_context(
+        exchange_id="kucoin",
+        market_type="spot",
+    )
     guard.arm(
         actor="Danny",
         confirmation="ARM_LIVE",
@@ -506,6 +514,10 @@ def test_kill_switch_halts_first_and_cancels_open_orders(
     )
     store = OrderStore(tmp_path / "orders.db")
     guard = LiveExecutionGuard(store)
+    store.bind_execution_context(
+        exchange_id="kucoin",
+        market_type="spot",
+    )
     guard.arm(
         actor="Danny",
         confirmation="ARM_LIVE",
@@ -579,6 +591,10 @@ def test_live_adapter_refuses_unprotected_entry(
     )
     store = OrderStore(tmp_path / "orders.db")
     guard = LiveExecutionGuard(store)
+    store.bind_execution_context(
+        exchange_id="kucoin",
+        market_type="spot",
+    )
     guard.arm(
         actor="Danny",
         confirmation="ARM_LIVE",
@@ -646,6 +662,10 @@ def test_live_timeout_reconciles_original_order_without_duplicate(
     )
     store = OrderStore(tmp_path / "orders.db")
     guard = LiveExecutionGuard(store)
+    store.bind_execution_context(
+        exchange_id="kucoin",
+        market_type="spot",
+    )
     guard.arm(
         actor="Danny",
         confirmation="ARM_LIVE",
@@ -719,6 +739,10 @@ def test_execution_halt_persists_across_restart_and_requires_reset(
     first_guard = LiveExecutionGuard(
         first
     )
+    first.bind_execution_context(
+        exchange_id="kucoin",
+        market_type="spot",
+    )
     first_guard.arm(
         actor="Danny",
         confirmation="ARM_LIVE",
@@ -776,6 +800,10 @@ def test_live_adapter_refuses_market_without_client_order_id(
     )
     store = OrderStore(tmp_path / "orders.db")
     guard = LiveExecutionGuard(store)
+    store.bind_execution_context(
+        exchange_id="kucoin",
+        market_type="spot",
+    )
     guard.arm(
         actor="Danny",
         confirmation="ARM_LIVE",
