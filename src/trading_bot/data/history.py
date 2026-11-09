@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from pathlib import Path
 import re
 
@@ -21,6 +22,8 @@ def timeframe_to_milliseconds(timeframe: str) -> int:
     }
     if unit not in unit_ms:
         raise ValueError(f"Unsupported timeframe: {timeframe}")
+    if value <= 0:
+        raise ValueError("Timeframe length must be positive.")
     return value * unit_ms[unit]
 
 
@@ -29,6 +32,80 @@ def _utc_timestamp(value) -> pd.Timestamp:
     if timestamp.tzinfo is None:
         return timestamp.tz_localize("UTC")
     return timestamp.tz_convert("UTC")
+
+
+
+@dataclass(frozen=True)
+class HistoryCoverage:
+    """Evidence of the coverage actually downloaded, not the requested dates."""
+    requested_start: pd.Timestamp
+    requested_end_exclusive: pd.Timestamp
+    actual_start: pd.Timestamp | None
+    actual_end: pd.Timestamp | None
+    expected_candles: int
+    actual_candles: int
+    missing_candles: int
+    complete: bool
+
+    def summary(self) -> str:
+        first = self.actual_start.isoformat() if self.actual_start is not None else "none"
+        last = self.actual_end.isoformat() if self.actual_end is not None else "none"
+        return (
+            f"{self.actual_candles:,}/{self.expected_candles:,} candles; "
+            f"actual {first} to {last}; {self.missing_candles:,} "
+            "missing/out-of-range candles"
+        )
+
+
+def assess_history_coverage(
+    data: pd.DataFrame, start, end, timeframe: str = "1h"
+) -> HistoryCoverage:
+    """Require each requested UTC candle-open timestamp to be present.
+
+    An exchange may refuse old history or ignore the `since` argument.
+    Missing leading/trailing periods are as important as gaps in the middle.
+    The last requested timestamp is exclusive.
+    """
+    first = _utc_timestamp(start)
+    last = _utc_timestamp(end)
+    if last <= first:
+        raise ValueError("end must be later than start.")
+    delta = timeframe_to_milliseconds(timeframe)
+    start_ms = int(first.timestamp() * 1000)
+    end_ms = int(last.timestamp() * 1000)
+    first_expected_ms = ((start_ms + delta - 1) // delta) * delta
+    expected = max(0, (end_ms - first_expected_ms + delta - 1) // delta)
+    if expected <= 0:
+        raise ValueError("Requested period contains no full candle timestamps.")
+
+    if data.empty:
+        actual = pd.DatetimeIndex([], tz="UTC")
+    else:
+        actual = pd.DatetimeIndex(pd.to_datetime(data["timestamp"], utc=True))
+        actual = actual.sort_values().unique()
+        actual = pd.DatetimeIndex(actual)
+    in_range = actual[(actual >= first) & (actual < last)]
+    aligned = all(int(item.timestamp() * 1000) % delta == 0 for item in in_range)
+    inside_count = len(in_range)
+    missing = max(0, expected - inside_count)
+    complete = (
+        aligned and missing == 0 and len(actual) == inside_count
+        and inside_count == expected
+    )
+    return HistoryCoverage(
+        requested_start=first,
+        requested_end_exclusive=last,
+        actual_start=in_range.min() if inside_count else None,
+        actual_end=in_range.max() if inside_count else None,
+        expected_candles=expected,
+        actual_candles=inside_count,
+        missing_candles=missing,
+        complete=complete,
+    )
+
+
+class IncompleteHistoryError(ValueError):
+    """Exchange did not supply all requested candle timestamps."""
 
 
 def fetch_ohlcv_range(
@@ -201,6 +278,7 @@ def download_history(
     batch_limit: int = 1000,
     store: HistoricalDataStore | None = None,
     client: CCXTClient | None = None,
+    strict_coverage: bool = True,
 ) -> pd.DataFrame:
     data = fetch_ohlcv_range(
         symbol=symbol,
@@ -212,6 +290,15 @@ def download_history(
         batch_limit=batch_limit,
         client=client,
     )
+
+    report = assess_history_coverage(data, start, end, timeframe)
+    if strict_coverage and not report.complete:
+        raise IncompleteHistoryError(
+            f"{exchange_id} {market_type} {symbol} {timeframe}: "
+            f"incomplete history requested from {start} to {end}. "
+            f"{report.summary()}. Exchange history may be limited; "
+            "use --allow-partial only when incomplete coverage is acceptable."
+        )
 
     (store or HistoricalDataStore()).upsert(
         exchange_id=exchange_id,
