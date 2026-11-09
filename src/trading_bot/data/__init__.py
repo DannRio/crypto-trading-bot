@@ -5,6 +5,7 @@ from trading_bot.data.history import (
     assess_history_coverage,
     download_history,
     fetch_ohlcv_range,
+    import_history_csv,
     timeframe_to_milliseconds,
 )
 from trading_bot.data.market_data import get_ohlcv, get_ticker, normalize_ohlcv
@@ -18,6 +19,7 @@ __all__ = [
     "assess_history_coverage",
     "download_history",
     "fetch_ohlcv_range",
+    "import_history_csv",
     "get_ohlcv",
     "get_ticker",
     "normalize_ohlcv",
