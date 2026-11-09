@@ -159,6 +159,7 @@ class PaperBroker:
         setup: TradeSetup,
         created_at,
         regime: str = "",
+        strategy: str = "trend_continuation",
         expires_after_bars: int = 3,
     ) -> PaperOrder:
         if setup.status != SetupStatus.CONFIRMED:
@@ -194,6 +195,7 @@ class PaperBroker:
             planned_risk=setup.actual_risk_amount,
             score=setup.score,
             regime=regime,
+            strategy=strategy,
             bars_remaining=expires_after_bars,
         )
         self.orders[order.order_id] = order
@@ -264,6 +266,7 @@ class PaperBroker:
             entry_fee=entry_fee,
             score=order.score,
             regime=order.regime,
+            strategy=order.strategy,
         )
         self.positions[(order.symbol, order.timeframe)] = position
 
@@ -325,6 +328,7 @@ class PaperBroker:
             exit_reason=reason,
             score=position.score,
             regime=position.regime,
+            strategy=position.strategy,
         )
 
         order = self.orders[position.order_id]

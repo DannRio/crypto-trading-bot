@@ -34,6 +34,7 @@ class PaperJournal:
                 planned_risk REAL NOT NULL,
                 score INTEGER NOT NULL,
                 regime TEXT NOT NULL,
+                strategy TEXT NOT NULL DEFAULT 'trend_continuation',
                 bars_remaining INTEGER NOT NULL,
                 filled_at TEXT,
                 fill_price REAL,
@@ -61,11 +62,40 @@ class PaperJournal:
                 r_multiple REAL NOT NULL,
                 exit_reason TEXT NOT NULL,
                 score INTEGER NOT NULL,
-                regime TEXT NOT NULL
+                regime TEXT NOT NULL,
+                strategy TEXT NOT NULL DEFAULT 'trend_continuation'
             );
             """
         )
+        self._ensure_column(
+            "paper_orders",
+            "strategy",
+            "TEXT NOT NULL DEFAULT 'trend_continuation'",
+        )
+        self._ensure_column(
+            "paper_trades",
+            "strategy",
+            "TEXT NOT NULL DEFAULT 'trend_continuation'",
+        )
         self.connection.commit()
+
+    def _ensure_column(
+        self,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        columns = {
+            row[1]
+            for row in self.connection.execute(
+                f"PRAGMA table_info({table})"
+            ).fetchall()
+        }
+        if column not in columns:
+            self.connection.execute(
+                f"ALTER TABLE {table} "
+                f"ADD COLUMN {column} {definition}"
+            )
 
     @staticmethod
     def _timestamp(value) -> str | None:
@@ -80,13 +110,13 @@ class PaperJournal:
                 order_id, symbol, timeframe, signal, status,
                 created_at, reference_entry, stop_loss,
                 take_profit_1, take_profit_2, position_size,
-                planned_risk, score, regime, bars_remaining,
-                filled_at, fill_price, entry_fee, closed_at,
-                exit_price, exit_reason
+                planned_risk, score, regime, strategy,
+                bars_remaining, filled_at, fill_price, entry_fee,
+                closed_at, exit_price, exit_reason
             )
             VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?
             )
             ON CONFLICT(order_id) DO UPDATE SET
                 status=excluded.status,
@@ -113,6 +143,7 @@ class PaperJournal:
                 order.planned_risk,
                 order.score,
                 order.regime,
+                order.strategy,
                 order.bars_remaining,
                 self._timestamp(order.filled_at),
                 order.fill_price,
@@ -131,9 +162,10 @@ class PaperJournal:
                 order_id, symbol, timeframe, signal,
                 entry_time, exit_time, entry_price, exit_price,
                 position_size, gross_pnl, fees, net_pnl,
-                risk_amount, r_multiple, exit_reason, score, regime
+                risk_amount, r_multiple, exit_reason, score, regime,
+                strategy
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 trade.order_id,
@@ -153,6 +185,7 @@ class PaperJournal:
                 trade.exit_reason,
                 trade.score,
                 trade.regime,
+                trade.strategy,
             ),
         )
         self.connection.commit()

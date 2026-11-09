@@ -49,6 +49,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Account risk per confirmed setup, in percent.",
     )
     parser.add_argument("--min-score", type=int, default=70)
+    parser.add_argument(
+        "--strategies",
+        default="trend_continuation",
+        help=(
+            "Comma-separated strategies. Candidates remain opt-in; "
+            "trend_continuation is the default."
+        ),
+    )
     parser.add_argument("--show-no-trade", action="store_true")
     parser.add_argument(
         "--auto-universe",
@@ -127,7 +135,8 @@ def _print_result(result, show_no_trade: bool) -> None:
 
     print(
         f"\n[{assessment.status.value}] {result.symbol} "
-        f"{assessment.signal.value} | score {assessment.score}/100"
+        f"{assessment.signal.value} | {assessment.strategy} | "
+        f"score {assessment.score}/100"
     )
     if result.structure:
         print(
@@ -290,6 +299,11 @@ def main(argv: list[str] | None = None) -> int:
         for warning in selection.warnings:
             print(f"Universe warning: {warning}")
 
+    strategy_names = tuple(
+        value.strip()
+        for value in args.strategies.split(",")
+        if value.strip()
+    )
     confirmation_timeframes = tuple(
         value.strip()
         for value in args.confirm_timeframes.split(",")
@@ -306,6 +320,7 @@ def main(argv: list[str] | None = None) -> int:
             account_equity=args.equity,
             risk_percent=args.risk_percent / 100,
             min_confirmed_score=args.min_score,
+            strategy_names=strategy_names,
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
@@ -319,7 +334,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(
         f"\n{args.exchange.upper()} | {args.market_type} | "
-        f"{args.timeframe} | HTF {context_label} | "
+        f"{args.timeframe} | strategies {','.join(strategy_names)} | "
+        f"HTF {context_label} | "
         f"scanned {len(results)} market(s)"
     )
     visible = 0

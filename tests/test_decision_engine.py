@@ -33,3 +33,30 @@ def test_decision_engine_produces_confirmed_setup():
     assert decision.assessment.status == SetupStatus.CONFIRMED
     assert decision.setup is not None
     assert decision.setup.stop_loss < decision.setup.reference_entry
+    assert decision.assessment.strategy == "trend_continuation"
+    assert len(decision.candidates) == 1
+
+
+def test_decision_engine_can_compare_strategy_candidates():
+    data = add_indicators(trending_data())
+
+    decision = DecisionEngine(
+        account_equity=10_000,
+        risk_percent=0.01,
+        min_confirmed_score=50,
+        strategy_names=(
+            "trend_continuation",
+            "breakout_retest",
+            "range_mean_reversion",
+        ),
+    ).evaluate(data)
+
+    assert len(decision.candidates) == 3
+    assert {
+        candidate.strategy
+        for candidate in decision.candidates
+    } == {
+        "trend_continuation",
+        "breakout_retest",
+        "range_mean_reversion",
+    }

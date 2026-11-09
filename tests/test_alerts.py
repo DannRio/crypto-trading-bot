@@ -55,6 +55,7 @@ def test_build_scan_alerts_defaults_to_confirmed_only():
     assert events[0].kind == AlertKind.SETUP_CONFIRMED
     assert events[0].symbol == "BTC/USDT"
     assert events[0].score == 82
+    assert events[0].strategy == "trend_continuation"
 
 
 def test_alert_ledger_suppresses_across_dispatcher_restarts(tmp_path):
@@ -127,3 +128,31 @@ def test_jsonl_sink_writes_structured_event(tmp_path):
     text = path.read_text(encoding="utf-8")
     assert '"kind":"SCAN_ERROR"' in text
     assert '"symbol":"ETH/USDT"' in text
+
+
+
+def test_alert_fingerprint_distinguishes_strategies():
+    trend = AlertEvent(
+        kind=AlertKind.SETUP_CONFIRMED,
+        created_at=pd.Timestamp("2026-01-01T00:00:00Z"),
+        symbol="BTC/USDT",
+        timeframe="15m",
+        signal="LONG",
+        status="CONFIRMED",
+        score=80,
+        strategy="trend_continuation",
+        message="trend",
+    )
+    breakout = AlertEvent(
+        kind=AlertKind.SETUP_CONFIRMED,
+        created_at=pd.Timestamp("2026-01-01T00:00:00Z"),
+        symbol="BTC/USDT",
+        timeframe="15m",
+        signal="LONG",
+        status="CONFIRMED",
+        score=80,
+        strategy="breakout_retest",
+        message="breakout",
+    )
+
+    assert trend.fingerprint != breakout.fingerprint

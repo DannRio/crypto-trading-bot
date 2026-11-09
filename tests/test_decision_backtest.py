@@ -36,3 +36,6 @@ def test_decision_backtest_records_strategy_diagnostics():
     assert "score" in result.trades.columns
     assert "r_multiple" in result.trades.columns
     assert set(result.trades["signal"]) == {"LONG"}
+    assert set(result.trades["strategy"]) == {
+        "trend_continuation"
+    }

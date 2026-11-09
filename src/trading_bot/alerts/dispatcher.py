@@ -63,6 +63,7 @@ def build_scan_alerts(
             "exchange": result.exchange_id,
             "market_type": result.market_type,
             "score": assessment.score,
+            "strategy": assessment.strategy,
             "reason": assessment.reason,
             "multi_timeframe_aligned": (
                 result.multi_timeframe_aligned
@@ -87,7 +88,7 @@ def build_scan_alerts(
 
         message = (
             f"{assessment.status.value} "
-            f"{assessment.signal.value} setup "
+            f"{assessment.signal.value} {assessment.strategy} setup "
             f"score {assessment.score}/100."
         )
         events.append(
@@ -99,6 +100,7 @@ def build_scan_alerts(
                 signal=assessment.signal.value,
                 status=assessment.status.value,
                 score=assessment.score,
+                strategy=assessment.strategy,
                 message=message,
                 payload=payload,
             )

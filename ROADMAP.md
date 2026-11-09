@@ -32,8 +32,9 @@
 - [x] LONG / SHORT / NO_TRADE baseline
 - [x] Trend-continuation setup scoring
 - [x] Setup validation rules
-- [ ] Breakout/retest strategy
-- [ ] Range/mean-reversion strategy
+- [x] Configurable strategy registry
+- [x] Breakout/retest strategy candidate
+- [x] Range/mean-reversion strategy candidate
 
 ## Phase 5 — Risk & Trade Planning
 - [x] Risk-based position sizing

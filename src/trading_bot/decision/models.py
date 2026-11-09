@@ -10,3 +10,4 @@ class DecisionResult:
     assessment: SetupAssessment
     structure: MarketStructure
     setup: TradeSetup | None
+    candidates: tuple[SetupAssessment, ...] = ()

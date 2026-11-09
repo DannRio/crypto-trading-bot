@@ -21,6 +21,7 @@ class AlertEvent:
     signal: str = ""
     status: str = ""
     score: int = 0
+    strategy: str = ""
     payload: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -32,5 +33,6 @@ class AlertEvent:
                 self.timeframe,
                 self.signal,
                 self.status,
+                self.strategy,
             ]
         )

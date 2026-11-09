@@ -101,6 +101,7 @@ def apply_confirmation_gate(
                 reason=reason,
                 reasons=assessment.reasons
                 + (f"Higher-timeframe conflict: {labels}.",),
+                strategy=assessment.strategy,
             ),
             False,
         )
@@ -131,6 +132,7 @@ def apply_confirmation_gate(
                 reason=reason,
                 reasons=assessment.reasons
                 + (f"Higher-timeframe confirmation incomplete: {labels}.",),
+                strategy=assessment.strategy,
             ),
             None,
         )
@@ -152,6 +154,7 @@ def apply_confirmation_gate(
             reason=reason,
             reasons=assessment.reasons
             + (f"Higher-timeframe alignment confirmed: {labels}.",),
+            strategy=assessment.strategy,
         ),
         True,
     )

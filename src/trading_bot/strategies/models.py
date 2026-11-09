@@ -10,3 +10,4 @@ class SetupAssessment:
     score: int
     reason: str
     reasons: tuple[str, ...]
+    strategy: str = "trend_continuation"
