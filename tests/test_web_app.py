@@ -32,6 +32,7 @@ def test_reject_untrusted_market_inputs():
         "/api/scan?symbols=BTC/USD,BTC/USD",
         "/api/scan?risk_percent=30",
         "/api/scan?timeframe=1h&confirm_timeframes=15m",
+        "/api/scan?timeframe=1h&entry_timeframe=4h",
         "/api/backtest?symbol=%2F%2F",
         "/api/backtest?limit=50",
         "/api/scan?strategies=not_real",
@@ -77,6 +78,7 @@ def test_scanner_respects_market_parameters(monkeypatch):
             "symbols": "BTC/USDT:USDT,ETH/USDT:USDT",
             "timeframe": "15m",
             "confirm_timeframes": "1h,4h",
+            "entry_timeframe": "5m",
             "equity": 25000,
             "risk_percent": 1.5,
             "strategies": "trend_continuation,breakout_retest",
@@ -90,6 +92,7 @@ def test_scanner_respects_market_parameters(monkeypatch):
     assert captured["risk_percent"] == 0.015
     assert captured["market_type"] == "swap"
     assert captured["confirmation_timeframes"] == ("1h", "4h")
+    assert captured["entry_timeframe"] == "5m"
     assert captured["strategy_names"] == (
         "trend_continuation",
         "breakout_retest",
@@ -206,6 +209,7 @@ def test_web_scan_can_use_dynamic_universe(monkeypatch):
             "min_quote_volume": 1_000_000,
             "timeframe": "15m",
             "confirm_timeframes": "4h",
+            "entry_timeframe": "5m",
             "strategies": "breakout_retest",
         },
     )
@@ -217,6 +221,7 @@ def test_web_scan_can_use_dynamic_universe(monkeypatch):
     assert captured["symbols"] == ["BTC/USDT", "ETH/USDT"]
     assert captured["universe_config"].max_markets == 2
     assert captured["scanner_init"]["confirmation_timeframes"] == ("4h",)
+    assert captured["scanner_init"]["entry_timeframe"] == "5m"
     assert captured["scanner_init"]["strategy_names"] == (
         "breakout_retest",
     )
