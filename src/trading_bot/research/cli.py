@@ -3,7 +3,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from trading_bot.data import HistoricalDataStore, download_history
+from trading_bot.data import (
+    HistoricalDataStore,
+    IncompleteHistoryError,
+    assess_history_coverage,
+    download_history,
+)
 from trading_bot.research.batch import run_batch_research
 from trading_bot.research.evaluation import (
     run_out_of_sample_evaluation,
@@ -46,6 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument("--start", required=True)
     download.add_argument("--end", required=True)
     download.add_argument("--batch-limit", type=int, default=1000)
+    download.add_argument("--allow-partial", action="store_true",
+                          help="Allow incomplete ranges with an explicit warning.")
 
     backtest = subparsers.add_parser("backtest")
     _add_dataset_args(backtest)
@@ -111,31 +118,39 @@ def _export(frame: pd.DataFrame, destination: str | None) -> None:
 
 def _download(args) -> int:
     store = HistoricalDataStore(args.root)
+    failed = False
 
     for symbol in _csv_values(args.symbols):
         for timeframe in _csv_values(args.timeframes):
-            data = download_history(
-                symbol=symbol,
-                start=args.start,
-                end=args.end,
-                timeframe=timeframe,
-                exchange_id=args.exchange,
-                market_type=args.market_type,
-                batch_limit=args.batch_limit,
-                store=store,
-            )
-            path = store.dataset_path(
-                args.exchange,
-                args.market_type,
-                symbol,
-                timeframe,
-            )
-            print(
-                f"{symbol} {timeframe}: "
-                f"{len(data):,} fetched -> {path}"
-            )
-
-    return 0
+            try:
+                data = download_history(
+                    symbol=symbol,
+                    start=args.start,
+                    end=args.end,
+                    timeframe=timeframe,
+                    exchange_id=args.exchange,
+                    market_type=args.market_type,
+                    batch_limit=args.batch_limit,
+                    store=store,
+                    strict_coverage=not args.allow_partial,
+                )
+                coverage = assess_history_coverage(
+                    data, args.start, args.end, timeframe
+                )
+                path = store.dataset_path(
+                    args.exchange, args.market_type, symbol, timeframe,
+                )
+                status = "COMPLETE" if coverage.complete else "PARTIAL / NOT VERIFIED"
+                print(
+                    f"{symbol} {timeframe} [{status}]: "
+                    f"{coverage.summary()} -> {path}"
+                )
+                if not coverage.complete:
+                    print("WARNING: incomplete coverage; do not interpret as multi-year performance.")
+            except (IncompleteHistoryError, ValueError) as exc:
+                failed = True
+                print(f"FAILED: {symbol} {timeframe}: {exc}")
+    return 1 if failed else 0
 
 
 def _backtest(args) -> int:
