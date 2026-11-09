@@ -44,7 +44,11 @@
 - [x] TP1 / TP2 and R-multiples
 - [x] Notional exposure cap
 - [x] Portfolio-wide open-risk and position limits
-- [ ] Daily loss controls
+- [x] Gross-notional exposure limit
+- [x] Correlation-aware concentration limit
+- [x] Daily loss controls
+- [x] Weekly loss controls
+- [x] Persistent portfolio drawdown halt
 
 ## Phase 6 — Research & Backtesting
 - [x] Shared scanner/backtest DecisionEngine
@@ -80,6 +84,8 @@
 - [x] Realized/unrealized P&L
 - [x] Persistent SQLite trade journal
 - [x] Paper-vs-backtest execution comparison
+- [x] Restart-persistent portfolio risk state
+- [x] Manual guarded risk-halt reset
 
 ## Phase 9 — Assisted Trading
 - [ ] Approve/reject workflow
