@@ -63,6 +63,7 @@ class ManagedLiveBrokerAdapter(BrokerAdapter):
             credential_provider=credential_provider,
             exchange_factory=exchange_factory,
             require_attached_protection=True,
+            require_client_order_id=True,
         )
         self.gateway = CCXTOrderGateway(
             self.preparer.exchange,
