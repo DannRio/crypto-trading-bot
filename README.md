@@ -312,3 +312,49 @@ crypto-research backtest --exchange kucoin --market-type spot --symbols BTC/USDT
 Historical trades record the selected strategy, and batch output includes the resulting strategy mix. Paper orders/trades also persist strategy identity. Existing SQLite paper journals are migrated in place by adding the strategy column.
 
 Adding a strategy to the registry does **not** promote it to live use. Each candidate still needs multi-year, out-of-sample, walk-forward and paper validation.
+
+
+## Parameter experiments
+
+Parameter experiments are **TRAIN-only research runs**. They do not rank or promote a winner, and they never require using validation/test data to generate the experiment table.
+
+An example grid is included at:
+
+~~~text
+configs/experiments/trend_continuation_v1.json
+~~~
+
+Run it against local historical data:
+
+~~~powershell
+crypto-research experiment --exchange kucoin --market-type spot --symbols BTC/USDT,ETH/USDT,SOL/USDT --timeframes 1h --strategies trend_continuation --train-end 2025-01-01 --grid configs/experiments/trend_continuation_v1.json --export data/processed/trend_experiments.csv
+~~~
+
+Supported grid paths include:
+
+- `min_confirmed_score`
+- `entry_valid_bars`
+- `decision_lookback`
+- `planner.atr_stop_multiplier`
+- `planner.structure_buffer_atr`
+- `planner.entry_zone_atr`
+- `planner.max_structure_stop_atr`
+- `planner.max_notional_percent`
+- `planner.reward_to_risk_1`
+- `planner.reward_to_risk_2`
+- `strategy.<strategy_name>.<parameter>`
+
+For example:
+
+~~~json
+{
+  "min_confirmed_score": [60, 70, 80],
+  "planner.atr_stop_multiplier": [1.5, 2.0, 2.5],
+  "planner.reward_to_risk_2": [1.5, 2.0, 2.5],
+  "strategy.trend_continuation.volume_ratio_threshold": [1.0, 1.1, 1.25]
+}
+~~~
+
+Each experiment row includes a deterministic experiment ID, the exact grid values, the full effective configuration, TRAIN window, trade count, return, drawdown, win rate, profit factor, average P&L, average R, and strategy mix.
+
+The grid is capped at 500 combinations by default to prevent accidental combinatorial explosions. A parameter combination that looks good on TRAIN still has to survive untouched validation, test, walk-forward, and paper-trading gates before it can be promoted.

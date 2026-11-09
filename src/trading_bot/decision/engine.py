@@ -3,7 +3,7 @@ import pandas as pd
 from trading_bot.analysis import analyze_market_structure
 from trading_bot.core.enums import SetupStatus
 from trading_bot.decision.models import DecisionResult
-from trading_bot.planning import create_trade_setup
+from trading_bot.planning import TradePlanConfig, create_trade_setup
 from trading_bot.strategies import (
     DEFAULT_STRATEGIES,
     evaluate_strategies,
@@ -22,6 +22,8 @@ class DecisionEngine:
         min_confirmed_score: int = 70,
         min_forming_score: int = 50,
         strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES,
+        strategy_parameters: dict[str, dict] | None = None,
+        trade_plan_config: TradePlanConfig | None = None,
     ):
         self.account_equity = account_equity
         self.risk_percent = risk_percent
@@ -29,6 +31,10 @@ class DecisionEngine:
         self.min_forming_score = min_forming_score
         self.strategy_names = normalize_strategy_names(
             strategy_names
+        )
+        self.strategy_parameters = strategy_parameters or {}
+        self.trade_plan_config = (
+            trade_plan_config or TradePlanConfig()
         )
 
     def evaluate(self, data: pd.DataFrame) -> DecisionResult:
@@ -39,6 +45,7 @@ class DecisionEngine:
             strategy_names=self.strategy_names,
             min_confirmed_score=self.min_confirmed_score,
             min_forming_score=self.min_forming_score,
+            strategy_parameters=self.strategy_parameters,
         )
         assessment = select_best_assessment(candidates)
 
@@ -55,6 +62,7 @@ class DecisionEngine:
                 structure=structure,
                 account_equity=self.account_equity,
                 risk_percent=self.risk_percent,
+                config=self.trade_plan_config,
             )
 
         return DecisionResult(

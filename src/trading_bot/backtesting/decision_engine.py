@@ -10,6 +10,7 @@ from trading_bot.backtesting.metrics import (
 from trading_bot.backtesting.models import BacktestResult, CompletedTrade
 from trading_bot.core.enums import Signal, SetupStatus
 from trading_bot.decision import DecisionEngine
+from trading_bot.planning import TradePlanConfig
 from trading_bot.strategies import DEFAULT_STRATEGIES
 
 
@@ -54,6 +55,8 @@ def run_decision_backtest(
     decision_lookback: int = 250,
     allow_short: bool = True,
     strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES,
+    strategy_parameters: dict[str, dict] | None = None,
+    trade_plan_config: TradePlanConfig | None = None,
 ) -> BacktestResult:
     """Backtest the same scored decision path used by MarketScanner.
 
@@ -227,6 +230,8 @@ def run_decision_backtest(
                 risk_percent=risk_percent,
                 min_confirmed_score=min_confirmed_score,
                 strategy_names=strategy_names,
+                strategy_parameters=strategy_parameters,
+                trade_plan_config=trade_plan_config,
             ).evaluate(history)
 
             if (

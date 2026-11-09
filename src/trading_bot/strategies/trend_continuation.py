@@ -10,6 +10,11 @@ def evaluate_trend_continuation(
     structure: MarketStructure,
     min_confirmed_score: int = 70,
     min_forming_score: int = 50,
+    long_rsi_max: float = 68.0,
+    short_rsi_min: float = 32.0,
+    pullback_atr: float = 0.75,
+    volume_ratio_threshold: float = 1.10,
+    high_volatility_penalty: int = 10,
 ) -> SetupAssessment:
     required = {"close", "ema_50", "ema_200", "rsi_14", "atr_14"}
     missing = required.difference(df.columns)
@@ -59,10 +64,10 @@ def evaluate_trend_continuation(
     atr = float(latest["atr_14"])
 
     if signal == Signal.LONG:
-        if 50 <= rsi <= 68:
+        if 50 <= rsi <= long_rsi_max:
             score += 20
             reasons.append("RSI confirms bullish momentum without extension.")
-        elif rsi > 68:
+        elif rsi > long_rsi_max:
             score += 5
             reasons.append("Bullish momentum is extended.")
 
@@ -73,7 +78,7 @@ def evaluate_trend_continuation(
         if close > structure.resistance:
             score += 20
             reasons.append("Price closed above prior resistance.")
-        elif close >= ema_50 and (close - ema_50) <= (0.75 * atr):
+        elif close >= ema_50 and (close - ema_50) <= (pullback_atr * atr):
             score += 15
             reasons.append("Price is holding a controlled pullback near EMA 50.")
 
@@ -82,10 +87,10 @@ def evaluate_trend_continuation(
             reasons.append("Recent structure printed a higher low.")
 
     else:
-        if 32 <= rsi <= 50:
+        if short_rsi_min <= rsi <= 50:
             score += 20
             reasons.append("RSI confirms bearish momentum without extension.")
-        elif rsi < 32:
+        elif rsi < short_rsi_min:
             score += 5
             reasons.append("Bearish momentum is extended.")
 
@@ -96,7 +101,7 @@ def evaluate_trend_continuation(
         if close < structure.support:
             score += 20
             reasons.append("Price closed below prior support.")
-        elif close <= ema_50 and (ema_50 - close) <= (0.75 * atr):
+        elif close <= ema_50 and (ema_50 - close) <= (pullback_atr * atr):
             score += 15
             reasons.append("Price is holding a controlled rally near EMA 50.")
 
@@ -104,12 +109,12 @@ def evaluate_trend_continuation(
             score += 10
             reasons.append("Recent structure printed a lower high.")
 
-    if structure.volume_ratio >= 1.10:
+    if structure.volume_ratio >= volume_ratio_threshold:
         score += 15
         reasons.append(f"Volume is {structure.volume_ratio:.2f}x its recent average.")
 
     if structure.high_volatility:
-        score -= 10
+        score -= high_volatility_penalty
         reasons.append("Volatility is elevated; setup score reduced.")
 
     score = max(0, min(score, 100))

@@ -4,6 +4,42 @@ from trading_bot.core.enums import Signal, SetupStatus
 
 
 @dataclass(frozen=True)
+class TradePlanConfig:
+    atr_stop_multiplier: float = 2.0
+    structure_buffer_atr: float = 0.25
+    entry_zone_atr: float = 0.25
+    max_structure_stop_atr: float = 3.0
+    max_notional_percent: float = 1.0
+    reward_to_risk_1: float = 1.0
+    reward_to_risk_2: float = 2.0
+
+    def __post_init__(self):
+        positive = {
+            "atr_stop_multiplier": self.atr_stop_multiplier,
+            "structure_buffer_atr": self.structure_buffer_atr,
+            "entry_zone_atr": self.entry_zone_atr,
+            "max_structure_stop_atr": self.max_structure_stop_atr,
+            "max_notional_percent": self.max_notional_percent,
+            "reward_to_risk_1": self.reward_to_risk_1,
+            "reward_to_risk_2": self.reward_to_risk_2,
+        }
+        invalid = [
+            name
+            for name, value in positive.items()
+            if value <= 0
+        ]
+        if invalid:
+            raise ValueError(
+                "Trade-plan parameters must be positive: "
+                + ", ".join(invalid)
+            )
+        if self.reward_to_risk_2 < self.reward_to_risk_1:
+            raise ValueError(
+                "reward_to_risk_2 must be >= reward_to_risk_1."
+            )
+
+
+@dataclass(frozen=True)
 class TradeSetup:
     signal: Signal
     status: SetupStatus
