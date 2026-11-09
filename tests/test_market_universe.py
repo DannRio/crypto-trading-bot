@@ -128,7 +128,7 @@ class DerivedVolumeClient(FakeClient):
         super().__init__()
         self.tickers["BTC/USDT"] = {
             "quoteVolume": None,
-            "baseVolume": 200,
+            "baseVolume": 600,
             "last": 100_000,
             "bid": 99_990,
             "ask": 100_010,
@@ -151,4 +151,4 @@ def test_universe_derives_quote_volume_when_needed():
     )
 
     assert selection.candidates[0].symbol == "BTC/USDT"
-    assert selection.candidates[0].quote_volume == 20_000_000
+    assert selection.candidates[0].quote_volume == 60_000_000
