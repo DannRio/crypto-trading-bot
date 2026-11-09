@@ -270,3 +270,125 @@ def test_service_recovers_pending_order_after_restart(tmp_path):
     assert report.submitted_orders == 0
     assert report.duplicate_signals == 1
     reopened.close()
+
+
+
+class FakeShortScanner:
+    def __init__(self, **kwargs):
+        pass
+
+    def scan(self, symbols):
+        assessment = SetupAssessment(
+            signal=Signal.SHORT,
+            status=SetupStatus.CONFIRMED,
+            score=80,
+            reason="test short",
+            reasons=("test short",),
+            strategy="trend_continuation",
+        )
+        short_setup = TradeSetup(
+            signal=Signal.SHORT,
+            status=SetupStatus.CONFIRMED,
+            score=80,
+            reference_entry=100.0,
+            entry_low=99.0,
+            entry_high=101.0,
+            stop_loss=105.0,
+            take_profit_1=95.0,
+            take_profit_2=90.0,
+            reward_to_risk_1=1.0,
+            reward_to_risk_2=2.0,
+            position_size=2.0,
+            notional_value=200.0,
+            target_risk_amount=10.0,
+            actual_risk_amount=10.0,
+            reasons=("test short",),
+        )
+        structure = SimpleNamespace(
+            regime=MarketRegime.BEAR_TREND
+        )
+        return [
+            SimpleNamespace(
+                symbol=symbol,
+                timeframe="1h",
+                assessment=assessment,
+                setup=short_setup,
+                structure=structure,
+                error=None,
+            )
+            for symbol in symbols
+        ]
+
+
+def test_spot_short_signal_is_rejected_once(tmp_path):
+    feed = CandleFeed()
+    journal = PaperJournal(tmp_path / "paper.db")
+    service = PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT",),
+            fee_rate=0.0,
+            slippage_bps=0.0,
+        ),
+        journal=journal,
+        data_fetcher=feed,
+        scanner_factory=FakeShortScanner,
+    )
+
+    first = service.run_once()
+    second = service.run_once()
+
+    assert first.rejected_signals == 1
+    assert first.submitted_orders == 0
+    assert second.rejected_signals == 0
+    assert second.duplicate_signals == 1
+    assert len(journal.signal_events()) == 1
+    assert (
+        journal.signal_events().iloc[0]["reason"]
+        == "Spot paper service is long-only."
+    )
+    journal.close()
+
+
+def test_run_forever_can_continue_after_cycle_error(tmp_path):
+    feed = CandleFeed()
+    journal = PaperJournal(tmp_path / "paper.db")
+    service = PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT",),
+            interval_seconds=1,
+        ),
+        journal=journal,
+        data_fetcher=feed,
+        scanner_factory=FakeScanner,
+    )
+
+    calls = {"count": 0}
+    original = service.run_once
+
+    def flaky_run_once():
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("temporary exchange failure")
+        return original()
+
+    service.run_once = flaky_run_once
+    errors = []
+    reports = []
+
+    service.run_forever(
+        sleep_fn=lambda seconds: None,
+        on_cycle=reports.append,
+        on_error=errors.append,
+        max_cycles=2,
+    )
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], RuntimeError)
+    assert len(reports) == 1
+    journal.close()
