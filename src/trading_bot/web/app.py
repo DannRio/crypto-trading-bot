@@ -1,6 +1,6 @@
-"""Read-only web API around the existing decision engine.
+"""Local research and dry-run assisted-trading API.
 
-No authenticated exchange access, private keys, order placement or execution.
+No authenticated exchange access, private keys, or live order placement.
 Bind locally (127.0.0.1); this development API has no user authentication.
 """
 from dataclasses import asdict, is_dataclass
@@ -32,7 +32,7 @@ from trading_bot.scanner import (
 from trading_bot.strategies import normalize_strategy_names
 
 log = logging.getLogger(__name__)
-app = FastAPI(title="Trading Bot — Read-only Research Dashboard", version="0.1.0")
+app = FastAPI(title="Trading Bot — Research & Assisted Dashboard", version="0.12.0")
 
 EXCHANGES = {"kraken", "kucoin", "binance", "bybit", "okx", "coinbase"}
 MARKET_TYPES = {"spot", "swap", "future"}
