@@ -37,6 +37,8 @@ class PaperServiceConfig:
     risk_percent: float = 0.01
     min_confirmed_score: int = 70
     strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES
+    fee_rate: float = 0.001
+    slippage_bps: float = 5.0
     entry_expiry_bars: int = 3
     interval_seconds: float = 60.0
 
@@ -46,6 +48,10 @@ class PaperServiceConfig:
         if not 0 < self.risk_percent <= 1:
             raise ValueError(
                 "risk_percent must be greater than 0 and <= 1."
+            )
+        if self.fee_rate < 0 or self.slippage_bps < 0:
+            raise ValueError(
+                "fee_rate and slippage_bps cannot be negative."
             )
         if self.entry_expiry_bars <= 0:
             raise ValueError("entry_expiry_bars must be positive.")
@@ -68,6 +74,7 @@ class PaperServiceRunReport:
     duplicate_signals: int
     closed_trades: int
     scan_errors: int
+    management_errors: int
     snapshot: PaperAccountSnapshot
 
 
@@ -91,6 +98,8 @@ class PaperTradingService:
         self.universe_factory = universe_factory
         self.broker = broker or PaperBroker(
             starting_equity=config.starting_equity,
+            fee_rate=config.fee_rate,
+            slippage_bps=config.slippage_bps,
             journal=journal,
         )
 
@@ -113,6 +122,10 @@ class PaperTradingService:
                 max_spread_bps=self.config.max_spread_bps,
             )
         )
+        if not selection.symbols:
+            raise RuntimeError(
+                "Dynamic universe returned no eligible markets."
+            )
         return selection.symbols
 
     def _tracked_symbols(
@@ -241,10 +254,15 @@ class PaperTradingService:
         closed_trades = 0
         signal_times: dict[str, pd.Timestamp] = {}
 
+        management_errors = 0
         for symbol in tracked_symbols:
-            processed, closed_count, latest_time = (
-                self._process_unseen_candles(symbol)
-            )
+            try:
+                processed, closed_count, latest_time = (
+                    self._process_unseen_candles(symbol)
+                )
+            except Exception:
+                management_errors += 1
+                continue
             new_candles += processed
             closed_trades += closed_count
             if latest_time is not None:
@@ -349,6 +367,7 @@ class PaperTradingService:
             duplicate_signals=duplicates,
             closed_trades=closed_trades,
             scan_errors=scan_errors,
+            management_errors=management_errors,
             snapshot=self.broker.snapshot(),
         )
 
