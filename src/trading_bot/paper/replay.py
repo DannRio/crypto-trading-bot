@@ -33,10 +33,7 @@ def run_paper_replay(
             candle=candle,
         )
 
-        if (
-            i >= len(prepared) - 1
-            or broker.has_exposure(symbol, timeframe)
-        ):
+        if i >= len(prepared) - 1:
             continue
 
         history = prepared.iloc[
@@ -48,6 +45,32 @@ def run_paper_replay(
             min_confirmed_score=min_confirmed_score,
             strategy_names=strategy_names,
         ).evaluate(history)
+
+        # Revalidate unfilled orders at candle close. A pending thesis may
+        # survive only while the same strategy and direction remain confirmed.
+        for order in list(broker.pending_orders):
+            if (
+                order.symbol != symbol
+                or order.timeframe != timeframe
+            ):
+                continue
+            still_valid = (
+                decision.assessment.status
+                == SetupStatus.CONFIRMED
+                and decision.setup is not None
+                and decision.assessment.signal
+                == order.signal
+                and decision.assessment.strategy
+                == order.strategy
+            )
+            if not still_valid:
+                broker.cancel_order(
+                    order.order_id,
+                    reason="SETUP_INVALIDATED",
+                )
+
+        if broker.has_exposure(symbol, timeframe):
+            continue
 
         if (
             decision.assessment.status
