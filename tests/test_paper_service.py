@@ -9,6 +9,7 @@ from trading_bot.paper import (
     PaperJournal,
     PaperServiceConfig,
     PaperTradingService,
+    PortfolioRiskConfig,
 )
 from trading_bot.planning import TradeSetup
 from trading_bot.strategies import SetupAssessment
@@ -436,3 +437,105 @@ def test_service_rejects_restart_with_different_account_invariants(
             scanner_factory=FakeScanner,
         )
     second.close()
+
+
+
+def test_daily_loss_halt_cancels_pending_orders_and_persists(
+    tmp_path,
+):
+    feed = CandleFeed()
+    path = tmp_path / "continuous.db"
+    journal = PaperJournal(path)
+    service = PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT",),
+            fee_rate=0.0,
+            slippage_bps=0.0,
+            portfolio_risk=PortfolioRiskConfig(
+                max_daily_loss_percent=0.02,
+                max_weekly_loss_percent=0.50,
+                max_drawdown_percent=0.50,
+                require_correlation_data=False,
+            ),
+        ),
+        journal=journal,
+        data_fetcher=feed,
+        scanner_factory=FakeScanner,
+    )
+
+    first = service.run_once()
+    assert first.risk_halted is False
+    assert len(service.broker.pending_orders) == 1
+
+    service.broker.realized_net_pnl = -300.0
+    second = service.run_once()
+
+    assert second.risk_halted is True
+    assert "Daily loss limit" in second.risk_reason
+    assert second.pending_cancelled_by_risk == 1
+    assert len(service.broker.pending_orders) == 0
+
+    persisted = journal.load_risk_state()
+    assert persisted is not None
+    assert persisted.halted is True
+    journal.close()
+
+    reopened = PaperJournal(path)
+    restarted = PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT",),
+            fee_rate=0.0,
+            slippage_bps=0.0,
+            portfolio_risk=PortfolioRiskConfig(
+                max_daily_loss_percent=0.02,
+                max_weekly_loss_percent=0.50,
+                max_drawdown_percent=0.50,
+                require_correlation_data=False,
+            ),
+        ),
+        journal=reopened,
+        data_fetcher=feed,
+        scanner_factory=FakeScanner,
+    )
+    assert restarted.broker.risk_halted is True
+    reopened.close()
+
+
+def test_management_error_blocks_new_risk_for_cycle(tmp_path):
+    class PartialFailureFeed(CandleFeed):
+        def __call__(self, symbol, **kwargs):
+            if symbol == "BROKEN/USDT":
+                raise RuntimeError("market data unavailable")
+            return super().__call__(symbol=symbol, **kwargs)
+
+    feed = PartialFailureFeed()
+    journal = PaperJournal(tmp_path / "paper.db")
+    service = PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT", "BROKEN/USDT"),
+            fee_rate=0.0,
+            slippage_bps=0.0,
+            portfolio_risk=PortfolioRiskConfig(
+                require_correlation_data=False,
+            ),
+        ),
+        journal=journal,
+        data_fetcher=feed,
+        scanner_factory=FakeScanner,
+    )
+
+    report = service.run_once()
+
+    assert report.management_errors == 1
+    assert report.submitted_orders == 0
+    assert report.rejected_signals >= 1
+    journal.close()
