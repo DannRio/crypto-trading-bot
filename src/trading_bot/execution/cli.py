@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--order-db",
-        default="data/orders/orders.db",
+        default="data/orders/live_orders.db",
     )
     parser.add_argument(
         "--assisted-db",
@@ -142,6 +142,10 @@ def _authenticated_gateway(
     market_type: str,
     order_store: OrderStore,
 ):
+    order_store.bind_execution_context(
+        exchange_id=exchange,
+        market_type=market_type,
+    )
     guard = LiveExecutionGuard(
         order_store
     )
