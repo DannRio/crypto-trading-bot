@@ -44,6 +44,11 @@ class PaperJournal:
                 exit_reason TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS paper_service_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS paper_service_checkpoints (
                 symbol TEXT NOT NULL,
                 timeframe TEXT NOT NULL,
@@ -238,6 +243,51 @@ class PaperJournal:
             params=(limit,),
         )
 
+
+
+
+
+    def get_metadata(self, key: str) -> str | None:
+        row = self.connection.execute(
+            """
+            SELECT value
+            FROM paper_service_metadata
+            WHERE key = ?
+            """,
+            (key,),
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def set_metadata(
+        self,
+        key: str,
+        value,
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO paper_service_metadata (
+                key,
+                value
+            )
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value
+            """,
+            (key, str(value)),
+        )
+        self.connection.commit()
+
+    def metadata(self) -> dict[str, str]:
+        return {
+            str(key): str(value)
+            for key, value in self.connection.execute(
+                """
+                SELECT key, value
+                FROM paper_service_metadata
+                ORDER BY key
+                """
+            ).fetchall()
+        }
 
 
     def active_orders(self) -> pd.DataFrame:
