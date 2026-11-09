@@ -411,17 +411,7 @@ class CCXTOrderGateway(OrderGateway):
         if refreshed is not None:
             return refreshed
 
-        return ExchangeOrderSnapshot(
-            external_order_id=str(
-                external_order_id
-            ),
-            client_order_id=None,
-            status=ManagedOrderStatus.CANCELLED,
-            filled_amount=0.0,
-            average_price=None,
-            symbol=symbol,
-            message=(
-                "Exchange acknowledged cancellation but did not "
-                "return a queryable unified order."
-            ),
+        raise RuntimeError(
+            "Exchange acknowledged cancellation but the resulting "
+            "order state could not be verified."
         )
