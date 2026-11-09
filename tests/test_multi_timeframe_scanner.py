@@ -104,3 +104,72 @@ def test_confirmation_timeframe_must_be_higher_than_primary():
         assert "must be higher" in str(exc)
     else:
         raise AssertionError("Expected invalid timeframe hierarchy.")
+
+
+
+def test_lower_timeframe_entry_trigger_confirms_setup():
+    datasets = {
+        "15m": trending_candles("15m", "up"),
+        "1h": trending_candles("1h", "up"),
+        "4h": trending_candles("4h", "up"),
+    }
+
+    scanner = MarketScanner(
+        timeframe="1h",
+        confirmation_timeframes=("4h",),
+        entry_timeframe="15m",
+        min_confirmed_score=50,
+        data_fetcher=lambda timeframe, **kwargs: datasets[
+            timeframe
+        ].copy(),
+    )
+
+    result = scanner.scan_symbol("BTC/USDT")
+
+    assert result.assessment is not None
+    assert result.assessment.status == SetupStatus.CONFIRMED
+    assert result.setup is not None
+    assert result.entry_timeframe == "15m"
+    assert result.entry_trigger is not None
+    assert result.entry_trigger.confirmed is True
+
+
+def test_lower_timeframe_trigger_waits_without_invalidating_thesis():
+    datasets = {
+        "15m": trending_candles("15m", "down"),
+        "1h": trending_candles("1h", "up"),
+        "4h": trending_candles("4h", "up"),
+    }
+
+    scanner = MarketScanner(
+        timeframe="1h",
+        confirmation_timeframes=("4h",),
+        entry_timeframe="15m",
+        min_confirmed_score=50,
+        data_fetcher=lambda timeframe, **kwargs: datasets[
+            timeframe
+        ].copy(),
+    )
+
+    result = scanner.scan_symbol("BTC/USDT")
+
+    assert result.primary_assessment is not None
+    assert result.primary_assessment.status == SetupStatus.CONFIRMED
+    assert result.multi_timeframe_aligned is True
+    assert result.entry_trigger is not None
+    assert result.entry_trigger.confirmed is False
+    assert result.assessment is not None
+    assert result.assessment.status == SetupStatus.FORMING
+    assert result.setup is None
+
+
+def test_entry_timeframe_must_be_lower_than_primary():
+    try:
+        MarketScanner(
+            timeframe="1h",
+            entry_timeframe="4h",
+        )
+    except ValueError as exc:
+        assert "must be lower" in str(exc)
+    else:
+        raise AssertionError("Expected invalid entry timeframe hierarchy.")
