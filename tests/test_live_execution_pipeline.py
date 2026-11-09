@@ -560,7 +560,13 @@ def test_kill_switch_halts_first_and_cancels_open_orders(
 
 class NoProtectionExchange(FakeLiveExchange):
     def feature_value(self, symbol, method, feature):
-        return False
+        if feature in {"stopLoss", "takeProfit"}:
+            return False
+        return super().feature_value(
+            symbol,
+            method,
+            feature,
+        )
 
 
 def test_live_adapter_refuses_unprotected_entry(
