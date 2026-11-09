@@ -277,13 +277,16 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
                 f"Exchange market is inactive: {intent.symbol}"
             )
 
-        requested_amount = float(
+        requested_base_amount = float(
             intent.plan["position_size"]
         )
         requested_price = float(
             intent.plan["reference_entry"]
         )
-        if requested_amount <= 0 or requested_price <= 0:
+        if (
+            requested_base_amount <= 0
+            or requested_price <= 0
+        ):
             raise ValueError(
                 "Intent amount and price must be positive."
             )
@@ -301,10 +304,31 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
                 "is disabled for this market."
             )
 
+        contract_size = 1.0
+        requested_order_amount = (
+            requested_base_amount
+        )
+        if market.get("contract"):
+            try:
+                contract_size = float(
+                    market.get("contractSize")
+                )
+            except (TypeError, ValueError):
+                contract_size = 0.0
+            if contract_size <= 0:
+                raise RuntimeError(
+                    "Contract market has no valid contractSize; "
+                    "cannot convert base risk size to contracts."
+                )
+            requested_order_amount = (
+                requested_base_amount
+                / contract_size
+            )
+
         amount = float(
             self.exchange.amount_to_precision(
                 intent.symbol,
-                requested_amount,
+                requested_order_amount,
             )
         )
         price = float(
@@ -313,7 +337,12 @@ class AuthenticatedCCXTBrokerAdapter(BrokerAdapter):
                 requested_price,
             )
         )
-        cost = amount * price
+        base_amount = (
+            amount * contract_size
+            if market.get("contract")
+            else amount
+        )
+        cost = base_amount * price
 
         self._check_range(
             "amount",
