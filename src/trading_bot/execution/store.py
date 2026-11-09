@@ -113,6 +113,13 @@ class OrderStore:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS execution_context (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                exchange_id TEXT NOT NULL,
+                market_type TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_managed_orders_status
                 ON managed_orders(status, updated_at);
 
@@ -579,6 +586,81 @@ class OrderStore:
             self._row_to_order(row)
             for row in rows
         ]
+
+    def bind_execution_context(
+        self,
+        *,
+        exchange_id: str,
+        market_type: str,
+        now=None,
+    ) -> dict[str, str]:
+        exchange_id = exchange_id.strip()
+        market_type = market_type.strip()
+        if not exchange_id or not market_type:
+            raise ValueError(
+                "exchange_id and market_type are required."
+            )
+
+        existing = self.load_execution_context()
+        if existing is not None:
+            if (
+                existing["exchange_id"]
+                != exchange_id
+                or existing["market_type"]
+                != market_type
+            ):
+                raise ValueError(
+                    "Live order ledger is already locked to "
+                    f"{existing['exchange_id']} "
+                    f"{existing['market_type']}."
+                )
+            return existing
+
+        timestamp = _utc_timestamp(now)
+        self.connection.execute(
+            """
+            INSERT INTO execution_context (
+                id,
+                exchange_id,
+                market_type,
+                created_at
+            )
+            VALUES (1, ?, ?, ?)
+            """,
+            (
+                exchange_id,
+                market_type,
+                timestamp.isoformat(),
+            ),
+        )
+        self.connection.commit()
+        context = self.load_execution_context()
+        assert context is not None
+        return context
+
+    def load_execution_context(
+        self,
+    ) -> dict[str, str] | None:
+        row = self.connection.execute(
+            """
+            SELECT exchange_id, market_type, created_at
+            FROM execution_context
+            WHERE id = 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "exchange_id": str(
+                row["exchange_id"]
+            ),
+            "market_type": str(
+                row["market_type"]
+            ),
+            "created_at": str(
+                row["created_at"]
+            ),
+        }
 
     def load_execution_control(
         self,
