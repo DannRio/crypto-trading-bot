@@ -1,3 +1,4 @@
+from dataclasses import replace
 from uuid import uuid4
 
 import pandas as pd
@@ -14,6 +15,8 @@ from trading_bot.paper.models import (
 from trading_bot.paper.risk import (
     PortfolioRiskConfig,
     PortfolioRiskManager,
+    PortfolioRiskState,
+    RiskStateUpdate,
 )
 from trading_bot.planning import TradeSetup
 
@@ -81,6 +84,62 @@ class PaperBroker:
 
         self.realized_net_pnl = 0.0
         self.fees_paid = 0.0
+        self.historical_peak_equity = starting_equity
+        self.risk_state: PortfolioRiskState | None = (
+            journal.load_risk_state()
+            if journal is not None
+            else None
+        )
+
+
+
+    @property
+    def risk_halted(self) -> bool:
+        return bool(
+            self.risk_state is not None
+            and self.risk_state.halted
+        )
+
+    def evaluate_account_risk(
+        self,
+        timestamp,
+    ) -> RiskStateUpdate:
+        account_equity = self.account_equity()
+        state = self.risk_state
+        if state is None:
+            state = self.risk_manager.initialize_state(
+                account_equity=account_equity,
+                timestamp=timestamp,
+            )
+            if self.historical_peak_equity > state.peak_equity:
+                state = replace(
+                    state,
+                    peak_equity=self.historical_peak_equity,
+                )
+
+        update = self.risk_manager.update_state(
+            state=state,
+            account_equity=account_equity,
+            timestamp=timestamp,
+        )
+        self.risk_state = update.state
+        if self.journal is not None:
+            self.journal.save_risk_state(update.state)
+        return update
+
+    def reset_risk_halt(
+        self,
+        timestamp,
+    ) -> PortfolioRiskState:
+        state = self.risk_manager.reset_state(
+            account_equity=self.account_equity(),
+            timestamp=timestamp,
+        )
+        self.risk_state = state
+        if self.journal is not None:
+            self.journal.save_risk_state(state)
+        return state
+
 
     @property
     def pending_orders(self) -> list[PaperOrder]:
@@ -164,6 +223,7 @@ class PaperBroker:
         self.positions.clear()
         self.completed_trades.clear()
         self.last_prices.clear()
+        self.risk_state = self.journal.load_risk_state()
 
         trades = self.journal.all_trades()
         self.realized_net_pnl = (
@@ -171,6 +231,15 @@ class PaperBroker:
             if not trades.empty
             else 0.0
         )
+        realized_curve = self.starting_equity
+        self.historical_peak_equity = self.starting_equity
+        if not trades.empty:
+            for pnl in trades["net_pnl"].astype(float):
+                realized_curve += pnl
+                self.historical_peak_equity = max(
+                    self.historical_peak_equity,
+                    realized_curve,
+                )
         self.fees_paid = (
             float(trades["fees"].sum())
             if not trades.empty
@@ -277,6 +346,7 @@ class PaperBroker:
         regime: str = "",
         strategy: str = "trend_continuation",
         expires_after_bars: int = 3,
+        correlations: dict[str, float] | None = None,
     ) -> PaperOrder:
         if setup.status != SetupStatus.CONFIRMED:
             raise ValueError("Only confirmed setups can be submitted.")
@@ -290,9 +360,13 @@ class PaperBroker:
         check = self.risk_manager.check_new_order(
             account_equity=self.account_equity(),
             symbol=symbol,
+            signal=setup.signal,
             new_risk=setup.actual_risk_amount,
+            new_notional=setup.notional_value,
             positions=list(self.positions.values()),
             pending_orders=self.pending_orders,
+            correlations=correlations,
+            risk_halted=self.risk_halted,
         )
         if not check.allowed:
             raise ValueError(check.reason)
