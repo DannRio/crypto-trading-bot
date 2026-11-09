@@ -184,6 +184,7 @@ class MarketScanner:
                 confirmation_timeframes=self.confirmation_timeframes,
                 confirmations=confirmations,
                 multi_timeframe_aligned=aligned,
+                candidates=decision.candidates,
             )
         except Exception as exc:
             return ScanResult(
