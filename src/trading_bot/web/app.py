@@ -16,7 +16,11 @@ import pandas as pd
 
 from trading_bot.backtesting import run_decision_backtest
 from trading_bot.data import get_ohlcv, validate_ohlcv
-from trading_bot.scanner import MarketScanner
+from trading_bot.scanner import (
+    DynamicMarketUniverse,
+    MarketScanner,
+    UniverseConfig,
+)
 
 log = logging.getLogger(__name__)
 app = FastAPI(title="Trading Bot — Read-only Research Dashboard", version="0.1.0")
@@ -68,6 +72,19 @@ def _parse_symbols(raw: str) -> list[str]:
     return symbols
 
 
+def _parse_quotes(raw: str) -> tuple[str, ...]:
+    values = tuple(
+        value.strip().upper()
+        for value in raw.split(",")
+        if value.strip()
+    )
+    if not values:
+        raise HTTPException(422, "Provide at least one quote currency.")
+    if len(set(values)) != len(values):
+        raise HTTPException(422, "Quote currencies must be unique.")
+    return values
+
+
 def _parse_timeframes(raw: str) -> tuple[str, ...]:
     values = tuple(
         value.strip()
@@ -110,10 +127,49 @@ def scan(
     equity: float = Query(10000.0, gt=0, le=100_000_000),
     risk_percent: float = Query(1.0, gt=0, le=5),
     min_score: int = Query(70, ge=0, le=100),
+    auto_universe: bool = Query(False),
+    quote_currencies: str = Query("USDT", max_length=100),
+    max_markets: int = Query(20, ge=1, le=50),
+    min_quote_volume: float = Query(1_000_000, ge=0),
+    max_spread_bps: float | None = Query(None, gt=0, le=10_000),
 ):
     _validate_exchange(exchange, market_type, timeframe)
-    markets = _parse_symbols(symbols)
     confirmation_timeframes = _parse_timeframes(confirm_timeframes)
+    universe_selection = None
+
+    if auto_universe:
+        quotes = _parse_quotes(quote_currencies)
+        try:
+            universe_selection = DynamicMarketUniverse(
+                exchange_id=exchange,
+                market_type=market_type,
+            ).select(
+                UniverseConfig(
+                    market_type=market_type,
+                    quote_currencies=quotes,
+                    max_markets=max_markets,
+                    min_quote_volume=min_quote_volume,
+                    max_spread_bps=max_spread_bps,
+                )
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except Exception as exc:
+            log.exception("Universe discovery failure")
+            raise HTTPException(
+                502,
+                "Could not discover a liquid market universe.",
+            ) from exc
+
+        markets = universe_selection.symbols
+        if not markets:
+            raise HTTPException(
+                422,
+                "No markets matched the universe filters.",
+            )
+    else:
+        markets = _parse_symbols(symbols)
+
     try:
         scanner = MarketScanner(
             exchange_id=exchange,
@@ -163,6 +219,8 @@ def scan(
         "market_type": market_type,
         "timeframe": timeframe,
         "confirmation_timeframes": list(confirmation_timeframes),
+        "auto_universe": auto_universe,
+        "universe": _safe(universe_selection),
         "results": output,
         "live_execution": False,
     }
