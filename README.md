@@ -358,3 +358,51 @@ For example:
 Each experiment row includes a deterministic experiment ID, the exact grid values, the full effective configuration, TRAIN window, trade count, return, drawdown, win rate, profit factor, average P&L, average R, and strategy mix.
 
 The grid is capped at 500 combinations by default to prevent accidental combinatorial explosions. A parameter combination that looks good on TRAIN still has to survive untouched validation, test, walk-forward, and paper-trading gates before it can be promoted.
+
+
+## Continuous paper service
+
+The paper broker can now run continuously against live public market data while keeping all execution simulated.
+
+Run one cycle first:
+
+~~~powershell
+crypto-paper daemon --exchange kucoin --market-type spot --symbols BTC/USDT,ETH/USDT,SOL/USDT --timeframe 15m --confirm-timeframes 1h,4h --strategies trend_continuation --once
+~~~
+
+Run continuously with a dynamic liquid-market universe:
+
+~~~powershell
+crypto-paper daemon --exchange kucoin --market-type spot --auto-universe --quote-currencies USDT --max-markets 20 --min-quote-volume 5000000 --timeframe 15m --confirm-timeframes 1h,4h --strategies trend_continuation --interval-seconds 60
+~~~
+
+Inspect persisted state:
+
+~~~powershell
+crypto-paper status
+~~~
+
+Continuous paper state is stored separately from historical replay by default:
+
+~~~text
+data/paper/continuous_paper.db
+~~~
+
+The service:
+
+- restores pending orders, open paper positions, realized P&L, and paid fees after restart
+- checkpoints the last processed closed candle for every managed market
+- never processes the same closed candle twice after a clean restart
+- records each strategy/signal/candle decision once so repeated scans do not resubmit the same setup
+- continues managing open/pending markets even if they later fall out of the dynamic scan universe
+- isolates individual market-data failures instead of abandoning every paper position
+- retries later service cycles after transient cycle failures
+- rejects naked SHORT simulation on spot markets
+- preserves open/pending paper state when the daemon is stopped
+- locks exchange, market type, timeframe, starting equity, fee rate, and slippage assumptions to the journal so a restart cannot silently reinterpret existing positions
+
+Use a new journal if those locked assumptions need to change.
+
+The local web dashboard has a read-only continuous-paper section showing pending/open state, realized P&L, recent trades, checkpoints, and signal decisions. The dashboard does not start, stop, approve, or place orders.
+
+Stopping the daemon does not liquidate paper positions. That is intentional: restart behavior must resemble a persistent trading service rather than a disposable backtest.
