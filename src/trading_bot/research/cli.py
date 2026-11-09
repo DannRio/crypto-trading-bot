@@ -256,6 +256,7 @@ def _walk_forward(args) -> int:
             step_bars=args.step_bars,
             **_backtest_kwargs(args),
         )
+        summary.insert(0, "strategies", args.strategies)
         summary.insert(0, "timeframe", spec.timeframe)
         summary.insert(0, "symbol", spec.symbol)
         summary.insert(0, "market_type", spec.market_type)
