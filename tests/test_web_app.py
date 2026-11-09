@@ -417,6 +417,15 @@ def test_assisted_stage_approve_and_list_are_dry_run(
     assert managed[0].external_order_id == approved["receipt"]["external_order_id"]
     order_store.close()
 
+    order_status = client.get("/api/orders/status")
+    assert order_status.status_code == 200
+    order_body = order_status.json()
+    assert order_body["mode"] == "MANAGED_DRY_RUN"
+    assert order_body["live_execution"] is False
+    assert len(order_body["orders"]) == 1
+    assert order_body["orders"][0]["status"] == "FILLED"
+    assert order_body["orders"][0]["intent_id"] == intent_id
+
     queue = client.get("/api/assisted/intents")
     assert queue.status_code == 200
     body = queue.json()
