@@ -36,7 +36,7 @@ PAGE = Path(__file__).with_name("index.html")
 PAPER_JOURNAL_PATH = Path(
     os.getenv(
         "TRADING_PAPER_JOURNAL",
-        "data/paper/paper_trading.db",
+        "data/paper/continuous_paper.db",
     )
 )
 
