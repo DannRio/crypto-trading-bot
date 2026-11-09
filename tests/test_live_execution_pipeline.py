@@ -238,7 +238,7 @@ def approved_intent():
             "2026-11-09T11:00:00Z"
         ),
         expires_at=pd.Timestamp(
-            "2026-11-09T13:00:00Z"
+            "2026-11-10T13:00:00Z"
         ),
         exchange_id="kucoin",
         market_type="spot",
