@@ -20,6 +20,11 @@ def _add_dataset_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--min-score", type=int, default=70)
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--slippage-bps", type=float, default=5.0)
+    parser.add_argument(
+        "--strategies",
+        default="trend_continuation",
+        help="Comma-separated strategy candidates for replay/comparison.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,6 +59,14 @@ def build_parser() -> argparse.ArgumentParser:
 def _validate_risk(args) -> None:
     if not 0 < args.risk_percent <= 100:
         raise SystemExit("--risk-percent must be between 0 and 100.")
+
+
+def _strategy_names(args) -> tuple[str, ...]:
+    return tuple(
+        value.strip()
+        for value in args.strategies.split(",")
+        if value.strip()
+    )
 
 
 def _load_data(args):
@@ -99,6 +112,7 @@ def _replay(args) -> int:
         risk_percent=args.risk_percent / 100,
         min_confirmed_score=args.min_score,
         allow_short=args.market_type != "spot",
+        strategy_names=_strategy_names(args),
     )
 
     snapshot = broker.snapshot()
@@ -116,6 +130,7 @@ def _replay(args) -> int:
         columns = [
             "symbol",
             "signal",
+            "strategy",
             "entry_time",
             "exit_time",
             "net_pnl",
@@ -144,6 +159,7 @@ def _compare(args) -> int:
         fee_rate=args.fee_rate,
         slippage_bps=args.slippage_bps,
         allow_short=args.market_type != "spot",
+        strategy_names=_strategy_names(args),
     )
 
     print("\n=== PAPER VS BACKTEST ===")
@@ -213,6 +229,7 @@ def _status(args) -> int:
                 [
                     "symbol",
                     "signal",
+                    "strategy",
                     "net_pnl",
                     "r_multiple",
                     "exit_reason",
