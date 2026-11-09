@@ -115,10 +115,12 @@ Scanner / ranked setups
 Core packages live under `src/trading_bot/`:
 
 - `analysis/` indicators and market structure
+- `assisted/` immutable approval intents and authenticated preparation boundaries
 - `backtesting/` legacy and scanner-aligned simulation
 - `decision/` shared decision path used by scanner and research
 - `data/` market data normalization, validation, pagination, and historical storage
-- `exchanges/` exchange adapters
+- `exchanges/` public exchange adapters
+- `execution/` managed orders, reconciliation, live guard, kill switch, and operator execution CLI
 - `paper/` simulated broker, portfolio risk, journal, and replay
 - `planning/` entry/stop/target planning
 - `research/` multi-dataset historical experiments
@@ -579,7 +581,7 @@ When an intent is approved in the dashboard:
 
 This makes the dry-run product exercise the same persistence/idempotency boundary that future exchange execution will use, instead of bypassing order management.
 
-The current product still does **not** contact an exchange for order placement. The immediate-fill gateway is a local simulation and the authenticated CCXT adapter's `execute()` method remains hard-disabled.
+The managed dry-run dashboard path still does **not** contact an exchange for order placement. It uses the local immediate-fill gateway. Live exchange submission, when deliberately enabled, is a separate CLI-only path through `ManagedLiveBrokerAdapter`.
 
 
 ## Guarded live execution v1
