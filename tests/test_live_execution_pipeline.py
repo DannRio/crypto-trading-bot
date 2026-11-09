@@ -879,3 +879,95 @@ def test_live_gateway_blocks_derivative_submission_even_when_armed(
         gateway.submit(prepared)
     assert exchange.create_calls == 0
     store.close()
+
+
+
+def test_unresolved_local_order_blocks_rearming(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv(
+        "TRADING_LIVE_EXECUTION",
+        "ENABLED",
+    )
+    store = OrderStore(tmp_path / "orders.db")
+    store.bind_execution_context(
+        exchange_id="kucoin",
+        market_type="spot",
+    )
+    guard = LiveExecutionGuard(store)
+
+    prepared = PreparedOrder(
+        intent_id="ambiguous-intent",
+        exchange_id="kucoin",
+        market_type="spot",
+        symbol="BTC/USDT",
+        order_type="limit",
+        side="buy",
+        amount=1.0,
+        price=100.0,
+        client_order_id=client_order_id_for_intent(
+            "ambiguous-intent"
+        ),
+    )
+    managed, _ = store.create_or_get(
+        prepared
+    )
+    store.transition(
+        managed.order_id,
+        ManagedOrderStatus.UNKNOWN,
+        allowed_from=(
+            ManagedOrderStatus.PREPARED,
+        ),
+        event_type="TEST_UNKNOWN",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="unresolved managed orders",
+    ):
+        guard.arm(
+            actor="Danny",
+            confirmation="ARM_LIVE",
+        )
+    store.close()
+
+
+class BrokenInventoryExchange(FakeLiveExchange):
+    def fetch_open_orders(
+        self,
+        symbol=None,
+        since=None,
+        limit=None,
+    ):
+        raise TimeoutError(
+            "Could not inventory exchange open orders."
+        )
+
+
+def test_reconciliation_inventory_failure_latches_halt(
+    tmp_path,
+):
+    store = OrderStore(tmp_path / "orders.db")
+    store.bind_execution_context(
+        exchange_id="kucoin",
+        market_type="spot",
+    )
+    guard = LiveExecutionGuard(store)
+    exchange = BrokenInventoryExchange()
+    gateway = CCXTOrderGateway(
+        exchange,
+        guard=guard,
+    )
+    from trading_bot.execution import OrderManager
+
+    report = ReconciliationService(
+        store,
+        OrderManager(store, gateway),
+        gateway,
+        guard,
+    ).reconcile_all()
+
+    assert report.errors == 1
+    assert guard.status().halted is True
+    store.close()
