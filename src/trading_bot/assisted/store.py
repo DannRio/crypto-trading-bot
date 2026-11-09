@@ -195,6 +195,24 @@ class IntentStore:
             else None
         )
 
+    def get_by_fingerprint(
+        self,
+        fingerprint: str,
+    ) -> TradeIntent | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM trade_intents
+            WHERE fingerprint = ?
+            """,
+            (fingerprint,),
+        ).fetchone()
+        return (
+            self._row_to_intent(row)
+            if row is not None
+            else None
+        )
+
     def expire_stale(self, now=None) -> int:
         timestamp = (
             pd.Timestamp.now(tz="UTC")
