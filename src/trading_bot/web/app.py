@@ -210,6 +210,8 @@ def scan(
     max_markets: int = Query(20, ge=1, le=50),
     min_quote_volume: float = Query(1_000_000, ge=0),
     max_spread_bps: float | None = Query(None, gt=0, le=10_000),
+    min_history_candles: int = Query(220, ge=0, le=5000),
+    max_history_probes: int = Query(60, ge=1, le=500),
 ):
     _validate_exchange(exchange, market_type, timeframe)
     confirmation_timeframes = _parse_timeframes(confirm_timeframes)
@@ -232,6 +234,9 @@ def scan(
                     max_markets=max_markets,
                     min_quote_volume=min_quote_volume,
                     max_spread_bps=max_spread_bps,
+                    min_history_candles=min_history_candles,
+                    history_timeframe=timeframe,
+                    max_history_probes=max_history_probes,
                 )
             )
         except ValueError as exc:
