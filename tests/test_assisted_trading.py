@@ -96,7 +96,7 @@ def test_confirmed_result_queues_once_and_plan_is_immutable(tmp_path):
     assert first.queued == 1
     assert second.duplicates == 1
 
-    pending = service.pending()
+    pending = service.pending(now=now)
     assert len(pending) == 1
     assert pending[0].status == IntentStatus.PENDING_APPROVAL
     assert pending[0].plan["stop_loss"] == 95.0
@@ -131,7 +131,9 @@ def test_stale_setup_is_not_queued(tmp_path):
 
     assert report.queued == 0
     assert report.stale == 1
-    assert service.pending() == []
+    assert service.pending(
+        now=pd.Timestamp("2026-01-01T11:00:00Z")
+    ) == []
     store.close()
 
 
@@ -165,7 +167,9 @@ def test_approval_executes_only_through_dry_run_adapter(tmp_path):
         [confirmed_result()],
         now=pd.Timestamp("2026-01-01T10:10:00Z"),
     )
-    intent = service.pending()[0]
+    intent = service.pending(
+        now=pd.Timestamp("2026-01-01T10:10:00Z")
+    )[0]
 
     executed, receipt = service.approve(
         intent.intent_id,
