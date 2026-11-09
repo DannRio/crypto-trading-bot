@@ -61,11 +61,26 @@ def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
         default=1_000_000,
     )
     parser.add_argument("--max-spread-bps", type=float)
+    parser.add_argument(
+        "--min-history-candles",
+        type=int,
+        default=220,
+    )
+    parser.add_argument(
+        "--max-history-probes",
+        type=int,
+        default=60,
+    )
     parser.add_argument("--timeframe", default="1h")
     parser.add_argument(
         "--confirm-timeframes",
         default="",
         help="Comma-separated higher timeframe regime gates.",
+    )
+    parser.add_argument(
+        "--entry-timeframe",
+        default="",
+        help="Optional lower timeframe used for entry confirmation.",
     )
     parser.add_argument("--equity", type=float, default=10_000)
     parser.add_argument("--risk-percent", type=float, default=1.0)
@@ -412,6 +427,9 @@ def _daemon(args) -> int:
         confirmation_timeframes=_csv_values(
             args.confirm_timeframes
         ),
+        entry_timeframe=(
+            args.entry_timeframe.strip() or None
+        ),
         symbols=_csv_values(args.symbols),
         auto_universe=args.auto_universe,
         quote_currencies=tuple(
@@ -423,6 +441,8 @@ def _daemon(args) -> int:
         max_markets=args.max_markets,
         min_quote_volume=args.min_quote_volume,
         max_spread_bps=args.max_spread_bps,
+        min_history_candles=args.min_history_candles,
+        max_history_probes=args.max_history_probes,
         starting_equity=args.equity,
         risk_percent=args.risk_percent / 100,
         min_confirmed_score=args.min_score,
