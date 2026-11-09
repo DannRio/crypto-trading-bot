@@ -129,17 +129,12 @@ def _set_parameter(
     )
 
 
-def _experiment_id(
-    strategy_names: tuple[str, ...],
-    parameters: dict,
-) -> str:
+def _experiment_id(effective_config: dict) -> str:
     canonical = json.dumps(
-        {
-            "strategies": strategy_names,
-            "parameters": parameters,
-        },
+        effective_config,
         sort_keys=True,
         separators=(",", ":"),
+        default=str,
     )
     return sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
@@ -238,9 +233,34 @@ def run_parameter_experiments(
                 for name, count in counts.items()
             )
 
+        effective_config = {
+            "strategies": list(strategies),
+            "grid_parameters": parameters,
+            "initial_equity": initial_equity,
+            "risk_percent": risk_percent,
+            "fee_rate": fee_rate,
+            "slippage_bps": slippage_bps,
+            "allow_short": allow_short,
+            "min_confirmed_score": backtest_kwargs[
+                "min_confirmed_score"
+            ],
+            "entry_valid_bars": backtest_kwargs[
+                "entry_valid_bars"
+            ],
+            "decision_lookback": backtest_kwargs[
+                "decision_lookback"
+            ],
+            "strategy_parameters": strategy_parameters,
+            "trade_plan_config": planner_values,
+            "train_start": (
+                str(training["timestamp"].iloc[0])
+            ),
+            "train_end_exclusive": str(
+                _utc_timestamp(train_end)
+            ),
+        }
         experiment_id = _experiment_id(
-            strategies,
-            parameters,
+            effective_config
         )
         rows.append(
             {
@@ -250,6 +270,12 @@ def run_parameter_experiments(
                     parameters,
                     sort_keys=True,
                     separators=(",", ":"),
+                ),
+                "effective_config_json": json.dumps(
+                    effective_config,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
                 ),
                 "train_start": training["timestamp"].iloc[0],
                 "train_end_exclusive": _utc_timestamp(train_end),
