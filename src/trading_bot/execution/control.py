@@ -71,6 +71,11 @@ class LiveExecutionGuard:
             raise ValueError(
                 f"Arming requires confirmation token {ARM_CONFIRMATION}."
             )
+        if self.store.load_execution_context() is None:
+            raise RuntimeError(
+                "Live execution ledger is not bound to an exchange "
+                "and market type."
+            )
         if not self.environment_enabled:
             raise RuntimeError(
                 f"Cannot arm until {self.env_var}={self.env_value}."
