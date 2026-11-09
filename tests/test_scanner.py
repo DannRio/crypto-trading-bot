@@ -26,9 +26,12 @@ def test_cli_parser_accepts_universal_exchange_options():
             "swap",
             "--symbols",
             "BTC/USDT:USDT",
+            "--confirm-timeframes",
+            "1h,4h",
         ]
     )
 
     assert args.exchange == "kucoin"
     assert args.market_type == "swap"
     assert args.symbols == "BTC/USDT:USDT"
+    assert args.confirm_timeframes == "1h,4h"
