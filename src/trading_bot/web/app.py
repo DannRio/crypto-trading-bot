@@ -729,14 +729,34 @@ def backtest(
     risk_percent: float = Query(1.0, gt=0, le=5),
     min_score: int = Query(70, ge=0, le=100),
     strategies: str = Query("trend_continuation", max_length=200),
+    confirm_timeframes: str = Query("", max_length=100),
+    entry_timeframe: str = Query("", max_length=20),
     fee_rate: float = Query(0.001, ge=0, le=0.05),
     slippage_bps: float = Query(5.0, ge=0, le=500),
 ):
     _validate_exchange(exchange, market_type, timeframe)
     symbol = _validate_symbol(symbol)
     strategy_names = _parse_strategies(strategies)
+    htf = _parse_timeframes(confirm_timeframes)
+    ltf = entry_timeframe.strip() or None
+    from trading_bot.scanner.multi_timeframe import (
+        validate_confirmation_timeframes,
+        validate_entry_timeframe,
+    )
+    try:
+        htf = validate_confirmation_timeframes(timeframe, htf)
+        ltf = validate_entry_timeframe(timeframe, ltf)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if (htf or ltf) and data_source != "local":
+        raise HTTPException(
+            422,
+            "Historical multi-timeframe confirmation requires saved local "
+            "datasets for every selected timeframe.",
+        )
 
     try:
+        secondary_data = {}
         if data_source == "local":
             store, dataset_path, checked_paths = (
                 _history_store_for_dataset(
@@ -797,6 +817,21 @@ def backtest(
 
             closed = filtered.reset_index(drop=True)
             source_path = str(dataset_path)
+
+            for extra_timeframe in dict.fromkeys((*htf, *((ltf,) if ltf else ()))):
+                extra_store, extra_path, extra_checked = _history_store_for_dataset(
+                    exchange, market_type, symbol, extra_timeframe
+                )
+                extra_candles = extra_store.load(
+                    exchange, market_type, symbol, extra_timeframe
+                )
+                if extra_candles.empty:
+                    checked = " | ".join(str(path) for path in extra_checked)
+                    raise HTTPException(
+                        404,
+                        f"Missing {extra_timeframe} confirmation dataset. Checked: {checked}",
+                    )
+                secondary_data[extra_timeframe] = extra_candles
         else:
             candles = get_ohlcv(
                 symbol=symbol,
@@ -829,6 +864,10 @@ def backtest(
             slippage_bps=slippage_bps,
             allow_short=market_type != "spot",
             strategy_names=strategy_names,
+            primary_timeframe=timeframe,
+            confirmation_timeframes=htf,
+            entry_timeframe=ltf,
+            secondary_data=secondary_data,
         )
     except HTTPException:
         raise
@@ -866,11 +905,13 @@ def backtest(
         "data_start": _safe(data_start),
         "data_end": _safe(data_end),
         "strategies": list(strategy_names),
+        "confirmation_timeframes": list(htf),
+        "entry_timeframe": ltf,
         "assumptions": {
             "fee_rate_per_side": fee_rate,
             "slippage_bps_per_side": slippage_bps,
             "min_score": min_score,
-            "single_timeframe_only": True,
+            "single_timeframe_only": not bool(htf or ltf),
         },
         "metrics": _safe({
             "initial_equity": result.initial_equity,
@@ -886,9 +927,11 @@ def backtest(
             result.trades.tail(10).to_dict("records")
         ),
         "warning": (
-            "This historical backtest is single-timeframe. "
-            "Scanner higher-timeframe confirmation and lower-timeframe "
-            "entry-trigger filters are not applied by this endpoint yet."
+            "MTF confirmation uses as-of closed historical candles, but execution "
+            "still uses primary-timeframe OHLC; intrabar TP/SL sequencing remains "
+            "conservative and has not been upgraded in this phase."
+            if htf or ltf else
+            "Single-timeframe baseline; scanner MTF gates are not applied."
         ),
     }
 
