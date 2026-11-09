@@ -199,6 +199,7 @@ def scan(
     symbols: str = Query("BTC/USD,ETH/USD", max_length=400),
     timeframe: str = Query("15m"),
     confirm_timeframes: str = Query("", max_length=100),
+    entry_timeframe: str = Query("", max_length=20),
     limit: int = Query(500, ge=250, le=1000),
     equity: float = Query(10000.0, gt=0, le=100_000_000),
     risk_percent: float = Query(1.0, gt=0, le=5),
@@ -212,6 +213,9 @@ def scan(
 ):
     _validate_exchange(exchange, market_type, timeframe)
     confirmation_timeframes = _parse_timeframes(confirm_timeframes)
+    entry_timeframe = entry_timeframe.strip()
+    if entry_timeframe and entry_timeframe not in TIMEFRAMES:
+        raise HTTPException(422, "Unsupported entry timeframe.")
     strategy_names = _parse_strategies(strategies)
     universe_selection = None
 
@@ -254,6 +258,7 @@ def scan(
             market_type=market_type,
             timeframe=timeframe,
             confirmation_timeframes=confirmation_timeframes,
+            entry_timeframe=entry_timeframe or None,
             candle_limit=limit,
             account_equity=equity,
             risk_percent=risk_percent / 100,
@@ -299,6 +304,14 @@ def scan(
                 "multi_timeframe_aligned",
                 None,
             ),
+            "entry_timeframe": getattr(
+                result,
+                "entry_timeframe",
+                None,
+            ),
+            "entry_trigger": _safe(
+                getattr(result, "entry_trigger", None)
+            ),
             "candidates": _safe(
                 getattr(result, "candidates", ())
             ),
@@ -310,6 +323,7 @@ def scan(
         "market_type": market_type,
         "timeframe": timeframe,
         "confirmation_timeframes": list(confirmation_timeframes),
+        "entry_timeframe": entry_timeframe or None,
         "strategies": list(strategy_names),
         "auto_universe": auto_universe,
         "universe": _safe(universe_selection),
