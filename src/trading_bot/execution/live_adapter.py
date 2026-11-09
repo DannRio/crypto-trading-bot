@@ -13,6 +13,7 @@ from trading_bot.assisted.credentials import (
 from trading_bot.assisted.models import (
     BrokerCapabilities,
     ExecutionReceipt,
+    IntentStatus,
     TradeIntent,
 )
 from trading_bot.execution.ccxt_gateway import (
@@ -98,6 +99,15 @@ class ManagedLiveBrokerAdapter(BrokerAdapter):
             )
 
         timestamp = self._now_fn()
+        if intent.status != IntentStatus.APPROVED:
+            raise ValueError(
+                "Live execution requires an APPROVED assisted intent."
+            )
+        if timestamp >= intent.expires_at:
+            raise ValueError(
+                "Approved intent expired before live submission."
+            )
+
         prepared = self.preparer.prepare_order(
             intent
         )
