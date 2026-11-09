@@ -3,6 +3,7 @@ import pandas as pd
 from trading_bot.backtesting import run_decision_backtest
 from trading_bot.data import HistoricalDataStore, validate_ohlcv
 from trading_bot.research.models import DatasetSpec
+from trading_bot.strategies import DEFAULT_STRATEGIES
 
 
 def _side_count(trades: pd.DataFrame, side: str) -> int:
@@ -19,6 +20,7 @@ def run_batch_research(
     min_confirmed_score: int = 70,
     fee_rate: float = 0.001,
     slippage_bps: float = 5.0,
+    strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES,
 ) -> tuple[pd.DataFrame, dict[tuple[str, str, str, str], object]]:
     store = store or HistoricalDataStore()
     summary_rows: list[dict] = []
@@ -63,6 +65,7 @@ def run_batch_research(
             fee_rate=fee_rate,
             slippage_bps=slippage_bps,
             allow_short=spec.market_type != "spot",
+            strategy_names=strategy_names,
         )
 
         trades = result.trades
@@ -92,6 +95,7 @@ def run_batch_research(
                 "average_pnl": result.average_pnl,
                 "average_r": average_r,
                 "median_score": median_score,
+                "strategies": ",".join(strategy_names),
                 "error": "",
             }
         )
