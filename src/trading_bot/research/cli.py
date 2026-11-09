@@ -58,6 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_dataset_args(backtest)
     _add_backtest_args(backtest)
     backtest.add_argument("--export")
+    backtest.add_argument(
+        "--min-history-years", type=float, default=0,
+        help="Reject datasets shorter than this span (e.g. 3 for three years).",
+    )
 
     oos = subparsers.add_parser("oos")
     _add_dataset_args(oos)
@@ -156,9 +160,12 @@ def _download(args) -> int:
 def _backtest(args) -> int:
     _validate_risk(args)
 
+    if args.min_history_years < 0:
+        raise SystemExit("--min-history-years cannot be negative.")
     summary, _ = run_batch_research(
         specs=_specs(args),
         store=HistoricalDataStore(args.root),
+        min_history_days=args.min_history_years * 365.25,
         **_backtest_kwargs(args),
     )
 
@@ -172,6 +179,8 @@ def _backtest(args) -> int:
         "symbol",
         "timeframe",
         "rows",
+        "span_days",
+        "missing_intervals",
         "trades",
         "return_pct",
         "max_drawdown_pct",
