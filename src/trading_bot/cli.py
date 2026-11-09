@@ -37,7 +37,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "Comma-separated higher timeframes used as regime gates, "
-            "for example 1h,4h when the primary timeframe is 15m."
+            "for example 4h when the primary timeframe is 1h."
+        ),
+    )
+    parser.add_argument(
+        "--entry-timeframe",
+        default="",
+        help=(
+            "Optional lower timeframe used only for entry confirmation, "
+            "for example 15m when the primary timeframe is 1h."
         ),
     )
     parser.add_argument("--limit", type=int, default=500)
@@ -160,6 +168,30 @@ def _print_result(result, show_no_trade: bool) -> None:
                 f"{item.timeframe}: {regime} ({marker})"
             )
         print("HTF context: " + " | ".join(context))
+
+    if result.entry_trigger:
+        trigger = result.entry_trigger
+        state = (
+            "confirmed"
+            if trigger.confirmed is True
+            else "waiting"
+            if trigger.confirmed is False
+            else "unavailable"
+        )
+        regime = (
+            trigger.regime.value
+            if trigger.regime is not None
+            else "UNKNOWN"
+        )
+        rsi = (
+            f"{trigger.rsi:.1f}"
+            if trigger.rsi is not None
+            else "n/a"
+        )
+        print(
+            f"Entry trigger {trigger.timeframe}: {state} | "
+            f"{regime} | RSI {rsi}"
+        )
 
     if result.setup:
         setup = result.setup
@@ -309,6 +341,7 @@ def main(argv: list[str] | None = None) -> int:
         for value in args.confirm_timeframes.split(",")
         if value.strip()
     )
+    entry_timeframe = args.entry_timeframe.strip() or None
 
     try:
         scanner = MarketScanner(
@@ -316,6 +349,7 @@ def main(argv: list[str] | None = None) -> int:
             market_type=args.market_type,
             timeframe=args.timeframe,
             confirmation_timeframes=confirmation_timeframes,
+            entry_timeframe=entry_timeframe,
             candle_limit=args.limit,
             account_equity=args.equity,
             risk_percent=args.risk_percent / 100,

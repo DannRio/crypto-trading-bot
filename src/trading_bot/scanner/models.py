@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from trading_bot.analysis import MarketStructure
 from trading_bot.data import DataQualityReport
 from trading_bot.planning import TradeSetup
-from trading_bot.scanner.multi_timeframe import TimeframeConfirmation
+from trading_bot.scanner.multi_timeframe import EntryTrigger, TimeframeConfirmation
 from trading_bot.strategies import SetupAssessment
 
 
@@ -23,6 +23,8 @@ class ScanResult:
     confirmations: tuple[TimeframeConfirmation, ...] = ()
     multi_timeframe_aligned: bool | None = None
     candidates: tuple[SetupAssessment, ...] = ()
+    entry_timeframe: str | None = None
+    entry_trigger: EntryTrigger | None = None
 
     @property
     def score(self) -> int:
