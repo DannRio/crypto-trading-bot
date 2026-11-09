@@ -6,6 +6,12 @@ from trading_bot.scanner.multi_timeframe import (
     validate_confirmation_timeframes,
 )
 from trading_bot.scanner.scanner import MarketScanner
+from trading_bot.scanner.universe import (
+    DynamicMarketUniverse,
+    MarketCandidate,
+    UniverseConfig,
+    UniverseSelection,
+)
 
 __all__ = [
     "MarketScanner",
@@ -14,4 +20,8 @@ __all__ = [
     "apply_confirmation_gate",
     "regime_alignment",
     "validate_confirmation_timeframes",
+    "DynamicMarketUniverse",
+    "MarketCandidate",
+    "UniverseConfig",
+    "UniverseSelection",
 ]
