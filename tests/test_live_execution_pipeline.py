@@ -336,6 +336,10 @@ def test_live_gateway_requires_environment_and_persistent_arm(
     ):
         gateway.submit(prepared)
 
+    store.bind_execution_context(
+        exchange_id="kucoin",
+        market_type="spot",
+    )
     guard.arm(
         actor="Danny",
         confirmation="ARM_LIVE",
