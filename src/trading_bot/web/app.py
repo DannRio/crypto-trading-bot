@@ -48,11 +48,25 @@ MARKET_TYPES = {"spot", "swap", "future"}
 TIMEFRAMES = {"5m", "15m", "1h", "4h", "1d"}
 SYMBOL_RE = re.compile(r"^[A-Z0-9._-]+/[A-Z0-9._-]+(?::[A-Z0-9._-]+)?$")
 PAGE = Path(__file__).with_name("index.html")
-HISTORY_ROOT = Path(
-    os.getenv(
-        "TRADING_HISTORY_ROOT",
-        "data/history",
-    )
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _project_path(
+    environment_variable: str,
+    default_relative: str,
+) -> Path:
+    raw = os.getenv(environment_variable)
+    if raw:
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        return path.resolve()
+    return (PROJECT_ROOT / default_relative).resolve()
+
+
+HISTORY_ROOT = _project_path(
+    "TRADING_HISTORY_ROOT",
+    "data/history",
 )
 PAPER_JOURNAL_PATH = Path(
     os.getenv(
@@ -185,6 +199,44 @@ def _parse_timeframes(raw: str) -> tuple[str, ...]:
             + ", ".join(unsupported),
         )
     return values
+
+
+def _history_store_for_dataset(
+    exchange: str,
+    market_type: str,
+    symbol: str,
+    timeframe: str,
+) -> tuple[HistoricalDataStore, Path, tuple[Path, ...]]:
+    roots: list[Path] = [Path(HISTORY_ROOT)]
+
+    # Backward-compatible fallback for datasets that were created relative
+    # to the shell working directory by older dashboard/research versions.
+    legacy_root = (Path.cwd() / "data" / "history").resolve()
+    normalized = {root.resolve() for root in roots}
+    if legacy_root not in normalized:
+        roots.append(legacy_root)
+
+    checked: list[Path] = []
+    for root in roots:
+        store = HistoricalDataStore(root)
+        path = store.dataset_path(
+            exchange,
+            market_type,
+            symbol,
+            timeframe,
+        )
+        checked.append(path.resolve())
+        if path.exists():
+            return store, path.resolve(), tuple(checked)
+
+    store = HistoricalDataStore(roots[0])
+    path = store.dataset_path(
+        exchange,
+        market_type,
+        symbol,
+        timeframe,
+    )
+    return store, path.resolve(), tuple(checked)
 
 
 @app.get("/")
@@ -686,7 +738,14 @@ def backtest(
 
     try:
         if data_source == "local":
-            store = HistoricalDataStore(HISTORY_ROOT)
+            store, dataset_path, checked_paths = (
+                _history_store_for_dataset(
+                    exchange,
+                    market_type,
+                    symbol,
+                    timeframe,
+                )
+            )
             candles = store.load(
                 exchange,
                 market_type,
@@ -694,10 +753,15 @@ def backtest(
                 timeframe,
             )
             if candles.empty:
+                checked = " | ".join(
+                    str(path)
+                    for path in checked_paths
+                )
                 raise HTTPException(
                     404,
                     "No saved historical dataset matches "
-                    f"{exchange} · {market_type} · {symbol} · {timeframe}.",
+                    f"{exchange} · {market_type} · {symbol} · {timeframe}. "
+                    f"Checked: {checked}",
                 )
 
             filtered = candles.copy()
@@ -732,14 +796,7 @@ def backtest(
                 ]
 
             closed = filtered.reset_index(drop=True)
-            source_path = str(
-                store.dataset_path(
-                    exchange,
-                    market_type,
-                    symbol,
-                    timeframe,
-                )
-            )
+            source_path = str(dataset_path)
         else:
             candles = get_ohlcv(
                 symbol=symbol,
