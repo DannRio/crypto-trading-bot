@@ -583,3 +583,125 @@ def test_service_rejects_silent_risk_policy_change(tmp_path):
             scanner_factory=FakeScanner,
         )
     second.close()
+
+
+
+class CorrelatedFeed:
+    def __call__(
+        self,
+        symbol,
+        timeframe="1h",
+        limit=500,
+        **kwargs,
+    ):
+        rows = 140
+        base = [
+            100.0 + index * 0.25
+            for index in range(rows)
+        ]
+        if symbol == "ETH/USDT":
+            base = [
+                value * 2.0
+                for value in base
+            ]
+        return pd.DataFrame(
+            {
+                "timestamp": pd.date_range(
+                    "2026-01-01",
+                    periods=rows,
+                    freq="1h",
+                    tz="UTC",
+                ),
+                "open": base,
+                "high": [value + 1 for value in base],
+                "low": [value - 1 for value in base],
+                "close": base,
+                "volume": [1000.0] * rows,
+            }
+        )
+
+
+class HighRiskScanner:
+    def __init__(self, **kwargs):
+        pass
+
+    def scan(self, symbols):
+        results = []
+        for symbol in symbols:
+            assessment = SetupAssessment(
+                signal=Signal.LONG,
+                status=SetupStatus.CONFIRMED,
+                score=80,
+                reason="correlated test",
+                reasons=("correlated test",),
+                strategy="trend_continuation",
+            )
+            setup = long_setup()
+            setup = TradeSetup(
+                signal=setup.signal,
+                status=setup.status,
+                score=setup.score,
+                reference_entry=setup.reference_entry,
+                entry_low=setup.entry_low,
+                entry_high=setup.entry_high,
+                stop_loss=setup.stop_loss,
+                take_profit_1=setup.take_profit_1,
+                take_profit_2=setup.take_profit_2,
+                reward_to_risk_1=setup.reward_to_risk_1,
+                reward_to_risk_2=setup.reward_to_risk_2,
+                position_size=setup.position_size,
+                notional_value=setup.notional_value,
+                target_risk_amount=120.0,
+                actual_risk_amount=120.0,
+                reasons=setup.reasons,
+            )
+            results.append(
+                SimpleNamespace(
+                    symbol=symbol,
+                    timeframe="1h",
+                    assessment=assessment,
+                    setup=setup,
+                    structure=SimpleNamespace(
+                        regime=MarketRegime.BULL_TREND
+                    ),
+                    error=None,
+                )
+            )
+        return results
+
+
+def test_service_applies_correlation_limit_to_new_setups(tmp_path):
+    journal = PaperJournal(tmp_path / "paper.db")
+    service = PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT", "ETH/USDT"),
+            fee_rate=0.0,
+            slippage_bps=0.0,
+            portfolio_risk=PortfolioRiskConfig(
+                max_open_risk_percent=0.05,
+                max_symbol_risk_percent=0.02,
+                max_correlated_risk_percent=0.02,
+                correlation_threshold=0.75,
+                require_correlation_data=True,
+            ),
+        ),
+        journal=journal,
+        data_fetcher=CorrelatedFeed(),
+        scanner_factory=HighRiskScanner,
+    )
+
+    report = service.run_once()
+
+    assert report.submitted_orders == 1
+    assert report.rejected_signals == 1
+    events = journal.signal_events(limit=10)
+    assert (
+        events["reason"]
+        .fillna("")
+        .str.contains("correlated-risk")
+        .any()
+    )
+    journal.close()
