@@ -15,7 +15,9 @@ from trading_bot.paper.replay import run_paper_replay
 from trading_bot.paper.risk import (
     PortfolioRiskConfig,
     PortfolioRiskManager,
+    PortfolioRiskState,
     RiskCheck,
+    RiskStateUpdate,
 )
 from trading_bot.paper.service import (
     PaperServiceConfig,
@@ -37,7 +39,9 @@ __all__ = [
     "PaperTradingService",
     "PortfolioRiskConfig",
     "PortfolioRiskManager",
+    "PortfolioRiskState",
     "RiskCheck",
+    "RiskStateUpdate",
     "compare_paper_to_backtest",
     "run_paper_replay",
 ]

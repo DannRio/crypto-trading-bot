@@ -1,11 +1,15 @@
 import argparse
 
+import pandas as pd
+
 from trading_bot.data import HistoricalDataStore, validate_ohlcv
 from trading_bot.paper import (
     PaperBroker,
     PaperJournal,
     PaperServiceConfig,
     PaperTradingService,
+    PortfolioRiskConfig,
+    PortfolioRiskManager,
     compare_paper_to_backtest,
     run_paper_replay,
 )
@@ -57,11 +61,26 @@ def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
         default=1_000_000,
     )
     parser.add_argument("--max-spread-bps", type=float)
+    parser.add_argument(
+        "--min-history-candles",
+        type=int,
+        default=220,
+    )
+    parser.add_argument(
+        "--max-history-probes",
+        type=int,
+        default=60,
+    )
     parser.add_argument("--timeframe", default="1h")
     parser.add_argument(
         "--confirm-timeframes",
         default="",
         help="Comma-separated higher timeframe regime gates.",
+    )
+    parser.add_argument(
+        "--entry-timeframe",
+        default="",
+        help="Optional lower timeframe used for entry confirmation.",
     )
     parser.add_argument("--equity", type=float, default=10_000)
     parser.add_argument("--risk-percent", type=float, default=1.0)
@@ -81,6 +100,66 @@ def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
         "--interval-seconds",
         type=float,
         default=60.0,
+    )
+    parser.add_argument(
+        "--max-open-risk-percent",
+        type=float,
+        default=3.0,
+    )
+    parser.add_argument(
+        "--max-symbol-risk-percent",
+        type=float,
+        default=1.5,
+    )
+    parser.add_argument("--max-positions", type=int, default=5)
+    parser.add_argument(
+        "--max-pending-orders",
+        type=int,
+        default=5,
+    )
+    parser.add_argument(
+        "--max-gross-notional-percent",
+        type=float,
+        default=200.0,
+    )
+    parser.add_argument(
+        "--max-correlated-risk-percent",
+        type=float,
+        default=2.0,
+    )
+    parser.add_argument(
+        "--correlation-threshold",
+        type=float,
+        default=0.75,
+    )
+    parser.add_argument(
+        "--allow-missing-correlation-data",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--max-daily-loss-percent",
+        type=float,
+        default=2.0,
+    )
+    parser.add_argument(
+        "--max-weekly-loss-percent",
+        type=float,
+        default=5.0,
+    )
+    parser.add_argument(
+        "--max-drawdown-percent",
+        type=float,
+        default=10.0,
+    )
+    parser.add_argument(
+        "--correlation-lookback",
+        type=int,
+        default=120,
+    )
+    parser.add_argument(
+        "--min-correlation-samples",
+        type=int,
+        default=60,
     )
     parser.add_argument(
         "--journal",
@@ -122,6 +201,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status.add_argument("--limit", type=int, default=20)
 
+    risk_status = subparsers.add_parser("risk-status")
+    risk_status.add_argument(
+        "--journal",
+        default="data/paper/continuous_paper.db",
+    )
+
+    risk_reset = subparsers.add_parser("risk-reset")
+    risk_reset.add_argument(
+        "--journal",
+        default="data/paper/continuous_paper.db",
+    )
+    risk_reset.add_argument(
+        "--confirm",
+        required=True,
+        help="Must be exactly RESET.",
+    )
+    risk_reset.add_argument(
+        "--max-state-age-minutes",
+        type=float,
+        default=10.0,
+    )
+
     return parser
 
 
@@ -132,6 +233,40 @@ def _validate_risk(args) -> None:
 
 def _strategy_names(args) -> tuple[str, ...]:
     return _csv_values(args.strategies)
+
+
+
+
+def _portfolio_risk_config(args) -> PortfolioRiskConfig:
+    return PortfolioRiskConfig(
+        max_open_risk_percent=(
+            args.max_open_risk_percent / 100
+        ),
+        max_positions=args.max_positions,
+        max_pending_orders=args.max_pending_orders,
+        max_symbol_risk_percent=(
+            args.max_symbol_risk_percent / 100
+        ),
+        max_gross_notional_percent=(
+            args.max_gross_notional_percent / 100
+        ),
+        max_correlated_risk_percent=(
+            args.max_correlated_risk_percent / 100
+        ),
+        correlation_threshold=args.correlation_threshold,
+        require_correlation_data=(
+            not args.allow_missing_correlation_data
+        ),
+        max_daily_loss_percent=(
+            args.max_daily_loss_percent / 100
+        ),
+        max_weekly_loss_percent=(
+            args.max_weekly_loss_percent / 100
+        ),
+        max_drawdown_percent=(
+            args.max_drawdown_percent / 100
+        ),
+    )
 
 
 def _load_data(args):
@@ -272,6 +407,10 @@ def _print_service_report(report) -> None:
         f"closed={report.closed_trades} "
         f"scan_errors={report.scan_errors} "
         f"management_errors={report.management_errors} "
+        f"risk_halted={report.risk_halted} "
+        f"daily_loss={report.daily_loss_pct:.2%} "
+        f"weekly_loss={report.weekly_loss_pct:.2%} "
+        f"drawdown={report.drawdown_pct:.2%} "
         f"equity={snapshot.equity:,.2f} "
         f"open={snapshot.open_positions} "
         f"pending={snapshot.pending_orders}"
@@ -288,6 +427,9 @@ def _daemon(args) -> int:
         confirmation_timeframes=_csv_values(
             args.confirm_timeframes
         ),
+        entry_timeframe=(
+            args.entry_timeframe.strip() or None
+        ),
         symbols=_csv_values(args.symbols),
         auto_universe=args.auto_universe,
         quote_currencies=tuple(
@@ -299,6 +441,8 @@ def _daemon(args) -> int:
         max_markets=args.max_markets,
         min_quote_volume=args.min_quote_volume,
         max_spread_bps=args.max_spread_bps,
+        min_history_candles=args.min_history_candles,
+        max_history_probes=args.max_history_probes,
         starting_equity=args.equity,
         risk_percent=args.risk_percent / 100,
         min_confirmed_score=args.min_score,
@@ -307,6 +451,9 @@ def _daemon(args) -> int:
         slippage_bps=args.slippage_bps,
         entry_expiry_bars=args.entry_expiry_bars,
         interval_seconds=args.interval_seconds,
+        correlation_lookback=args.correlation_lookback,
+        min_correlation_samples=args.min_correlation_samples,
+        portfolio_risk=_portfolio_risk_config(args),
     )
 
     journal = PaperJournal(args.journal)
@@ -355,6 +502,19 @@ def _status(args) -> int:
     trades = journal.trades(limit=args.limit)
     checkpoints = journal.checkpoints()
     signals = journal.signal_events(limit=args.limit)
+    risk_state = journal.load_risk_state()
+
+    print("\n=== PORTFOLIO RISK ===")
+    if risk_state is None:
+        print("No portfolio risk state recorded.")
+    else:
+        print(
+            f"Halted: {risk_state.halted} | "
+            f"reason: {risk_state.halt_reason or 'none'} | "
+            f"last equity: {risk_state.last_equity:,.2f} | "
+            f"peak: {risk_state.peak_equity:,.2f} | "
+            f"evaluated: {risk_state.evaluated_at}"
+        )
 
     print("\n=== PAPER ORDERS ===")
     if orders.empty:
@@ -411,6 +571,85 @@ def _status(args) -> int:
     return 0
 
 
+
+
+def _risk_status(args) -> int:
+    journal = PaperJournal(args.journal)
+    try:
+        state = journal.load_risk_state()
+        if state is None:
+            print("No portfolio risk state recorded.")
+            return 0
+
+        print("\n=== PORTFOLIO RISK STATE ===")
+        print(f"Halted:             {state.halted}")
+        print(
+            f"Halt reason:         "
+            f"{state.halt_reason or 'none'}"
+        )
+        print(f"Last equity:         {state.last_equity:,.2f}")
+        print(f"Peak equity:         {state.peak_equity:,.2f}")
+        print(f"Day start equity:    {state.day_start_equity:,.2f}")
+        print(f"Week start equity:   {state.week_start_equity:,.2f}")
+        print(f"Evaluated at:        {state.evaluated_at}")
+        print(f"Halted at:           {state.halted_at or 'n/a'}")
+        return 0
+    finally:
+        journal.close()
+
+
+def _risk_reset(args) -> int:
+    if args.confirm != "RESET":
+        raise SystemExit("--confirm must be exactly RESET.")
+    if args.max_state_age_minutes <= 0:
+        raise SystemExit(
+            "--max-state-age-minutes must be positive."
+        )
+
+    journal = PaperJournal(args.journal)
+    try:
+        state = journal.load_risk_state()
+        if state is None:
+            raise SystemExit(
+                "No portfolio risk state exists to reset."
+            )
+        if not state.halted:
+            raise SystemExit(
+                "Portfolio risk halt is not active; nothing to reset."
+            )
+
+        now = pd.Timestamp.now(tz="UTC")
+        evaluated = pd.Timestamp(state.evaluated_at)
+        if evaluated.tzinfo is None:
+            evaluated = evaluated.tz_localize("UTC")
+        else:
+            evaluated = evaluated.tz_convert("UTC")
+        age_minutes = (
+            (now - evaluated).total_seconds() / 60
+        )
+        if age_minutes > args.max_state_age_minutes:
+            raise SystemExit(
+                "Risk state is stale "
+                f"({age_minutes:.1f} minutes old). "
+                "Run the paper daemon once to refresh marks "
+                "before resetting the halt."
+            )
+
+        manager = PortfolioRiskManager()
+        reset = manager.reset_state(
+            account_equity=state.last_equity,
+            timestamp=now,
+        )
+        journal.save_risk_state(reset)
+        print(
+            "Portfolio risk halt reset at "
+            f"equity {reset.last_equity:,.2f}."
+        )
+        return 0
+    finally:
+        journal.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -422,6 +661,10 @@ def main(argv: list[str] | None = None) -> int:
         return _daemon(args)
     if args.command == "status":
         return _status(args)
+    if args.command == "risk-status":
+        return _risk_status(args)
+    if args.command == "risk-reset":
+        return _risk_reset(args)
 
     raise SystemExit("Unknown command.")
 

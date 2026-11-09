@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
+import json
+import math
 import time
 from typing import Callable
 
@@ -9,6 +11,7 @@ from trading_bot.data import get_ohlcv
 from trading_bot.paper.broker import PaperBroker
 from trading_bot.paper.journal import PaperJournal
 from trading_bot.paper.models import PaperAccountSnapshot
+from trading_bot.paper.risk import PortfolioRiskConfig
 from trading_bot.scanner import (
     DynamicMarketUniverse,
     MarketScanner,
@@ -26,12 +29,15 @@ class PaperServiceConfig:
     market_type: str = "spot"
     timeframe: str = "1h"
     confirmation_timeframes: tuple[str, ...] = ()
+    entry_timeframe: str | None = None
     symbols: tuple[str, ...] = ()
     auto_universe: bool = False
     quote_currencies: tuple[str, ...] = ("USDT",)
     max_markets: int = 20
     min_quote_volume: float = 1_000_000
     max_spread_bps: float | None = None
+    min_history_candles: int = 220
+    max_history_probes: int = 60
     candle_limit: int = 500
     starting_equity: float = 10_000
     risk_percent: float = 0.01
@@ -41,6 +47,11 @@ class PaperServiceConfig:
     slippage_bps: float = 5.0
     entry_expiry_bars: int = 3
     interval_seconds: float = 60.0
+    correlation_lookback: int = 120
+    min_correlation_samples: int = 60
+    portfolio_risk: PortfolioRiskConfig = field(
+        default_factory=PortfolioRiskConfig
+    )
 
     def __post_init__(self):
         if self.starting_equity <= 0:
@@ -57,6 +68,32 @@ class PaperServiceConfig:
             raise ValueError("entry_expiry_bars must be positive.")
         if self.interval_seconds <= 0:
             raise ValueError("interval_seconds must be positive.")
+        if self.candle_limit < 2:
+            raise ValueError("candle_limit must be at least 2.")
+        if self.min_history_candles < 0:
+            raise ValueError(
+                "min_history_candles cannot be negative."
+            )
+        if self.max_history_probes <= 0:
+            raise ValueError(
+                "max_history_probes must be positive."
+            )
+        if self.correlation_lookback < 2:
+            raise ValueError(
+                "correlation_lookback must be at least 2."
+            )
+        if self.min_correlation_samples < 2:
+            raise ValueError(
+                "min_correlation_samples must be at least 2."
+            )
+        if (
+            self.min_correlation_samples
+            > self.correlation_lookback
+        ):
+            raise ValueError(
+                "min_correlation_samples cannot exceed "
+                "correlation_lookback."
+            )
         if not self.auto_universe and not self.symbols:
             raise ValueError(
                 "Manual paper service requires at least one symbol."
@@ -75,11 +112,17 @@ class PaperServiceRunReport:
     closed_trades: int
     scan_errors: int
     management_errors: int
+    pending_cancelled_by_risk: int
+    risk_halted: bool
+    risk_reason: str
+    daily_loss_pct: float
+    weekly_loss_pct: float
+    drawdown_pct: float
     snapshot: PaperAccountSnapshot
 
 
 class PaperTradingService:
-    """Continuous read-only market scanner feeding the simulated broker."""
+    """Continuous public-market scanner feeding the simulated broker."""
 
     def __init__(
         self,
@@ -96,10 +139,15 @@ class PaperTradingService:
         self.data_fetcher = data_fetcher
         self.scanner_factory = scanner_factory
         self.universe_factory = universe_factory
+        self._cycle_data_cache: dict[
+            tuple[str, str, int],
+            pd.DataFrame,
+        ] = {}
         self.broker = broker or PaperBroker(
             starting_equity=config.starting_equity,
             fee_rate=config.fee_rate,
             slippage_bps=config.slippage_bps,
+            risk_config=config.portfolio_risk,
             journal=journal,
         )
 
@@ -113,6 +161,23 @@ class PaperTradingService:
             return format(value, ".17g")
         return str(value)
 
+    def _risk_policy_json(self) -> str:
+        return json.dumps(
+            {
+                "portfolio_risk": asdict(
+                    self.config.portfolio_risk
+                ),
+                "correlation_lookback": (
+                    self.config.correlation_lookback
+                ),
+                "min_correlation_samples": (
+                    self.config.min_correlation_samples
+                ),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
     def _ensure_service_metadata(self) -> None:
         expected = {
             "exchange_id": self.config.exchange_id,
@@ -121,6 +186,7 @@ class PaperTradingService:
             "starting_equity": self.config.starting_equity,
             "fee_rate": self.config.fee_rate,
             "slippage_bps": self.config.slippage_bps,
+            "risk_policy": self._risk_policy_json(),
         }
         persisted = self.journal.metadata()
 
@@ -138,6 +204,13 @@ class PaperTradingService:
                 value
             )
             actual = persisted.get(key)
+            if actual is None:
+                # Backward-compatible migration from the v0.10 journal.
+                self.journal.set_metadata(
+                    key,
+                    expected_value,
+                )
+                continue
             if actual != expected_value:
                 mismatches.append(
                     f"{key}: journal={actual!r}, "
@@ -166,6 +239,13 @@ class PaperTradingService:
                 max_markets=self.config.max_markets,
                 min_quote_volume=self.config.min_quote_volume,
                 max_spread_bps=self.config.max_spread_bps,
+                min_history_candles=(
+                    self.config.min_history_candles
+                ),
+                history_timeframe=self.config.timeframe,
+                max_history_probes=(
+                    self.config.max_history_probes
+                ),
             )
         )
         if not selection.symbols:
@@ -189,11 +269,32 @@ class PaperTradingService:
         )
         return sorted(symbols)
 
+    def _cached_data_fetcher(
+        self,
+        symbol: str,
+        timeframe: str = "1h",
+        limit: int = 500,
+        exchange_id: str = "kraken",
+        market_type: str = "spot",
+        **kwargs,
+    ) -> pd.DataFrame:
+        key = (symbol, timeframe, limit)
+        if key not in self._cycle_data_cache:
+            self._cycle_data_cache[key] = self.data_fetcher(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=limit,
+                exchange_id=exchange_id,
+                market_type=market_type,
+                **kwargs,
+            )
+        return self._cycle_data_cache[key].copy()
+
     def _fetch_closed(self, symbol: str) -> pd.DataFrame:
-        data = self.data_fetcher(
+        data = self._cached_data_fetcher(
             symbol=symbol,
             timeframe=self.config.timeframe,
-            limit=max(10, self.config.entry_expiry_bars + 3),
+            limit=self.config.candle_limit,
             exchange_id=self.config.exchange_id,
             market_type=self.config.market_type,
         )
@@ -280,6 +381,7 @@ class PaperTradingService:
             confirmation_timeframes=(
                 self.config.confirmation_timeframes
             ),
+            entry_timeframe=self.config.entry_timeframe,
             candle_limit=self.config.candle_limit,
             account_equity=self.broker.account_equity(),
             risk_percent=self.config.risk_percent,
@@ -287,10 +389,85 @@ class PaperTradingService:
                 self.config.min_confirmed_score
             ),
             strategy_names=self.config.strategy_names,
-            data_fetcher=self.data_fetcher,
+            data_fetcher=self._cached_data_fetcher,
         )
 
+    def _return_series(
+        self,
+        symbol: str,
+    ) -> pd.Series | None:
+        closed = self._fetch_closed(symbol)
+        if len(closed) < self.config.min_correlation_samples + 1:
+            return None
+
+        series = (
+            closed.set_index("timestamp")["close"]
+            .astype(float)
+            .pct_change()
+            .replace([math.inf, -math.inf], pd.NA)
+            .dropna()
+            .tail(self.config.correlation_lookback)
+        )
+        if len(series) < self.config.min_correlation_samples:
+            return None
+        return series
+
+    def _correlations_for(
+        self,
+        candidate_symbol: str,
+    ) -> dict[str, float]:
+        exposure_symbols = {
+            position.symbol
+            for position in self.broker.positions.values()
+        } | {
+            order.symbol
+            for order in self.broker.pending_orders
+        }
+        exposure_symbols.discard(candidate_symbol)
+        if not exposure_symbols:
+            return {}
+
+        candidate = self._return_series(
+            candidate_symbol
+        )
+        if candidate is None:
+            return {}
+
+        correlations: dict[str, float] = {}
+        for symbol in sorted(exposure_symbols):
+            existing = self._return_series(symbol)
+            if existing is None:
+                continue
+
+            joined = pd.concat(
+                [
+                    candidate.rename("candidate"),
+                    existing.rename("existing"),
+                ],
+                axis=1,
+                join="inner",
+            ).dropna().tail(
+                self.config.correlation_lookback
+            )
+            if (
+                len(joined)
+                < self.config.min_correlation_samples
+            ):
+                continue
+
+            correlation = joined["candidate"].corr(
+                joined["existing"]
+            )
+            if (
+                correlation is not None
+                and math.isfinite(float(correlation))
+            ):
+                correlations[symbol] = float(correlation)
+
+        return correlations
+
     def run_once(self) -> PaperServiceRunReport:
+        self._cycle_data_cache = {}
         scan_symbols = self._resolve_symbols()
         tracked_symbols = self._tracked_symbols(
             scan_symbols
@@ -313,6 +490,24 @@ class PaperTradingService:
             closed_trades += closed_count
             if latest_time is not None:
                 signal_times[symbol] = latest_time
+
+        risk_timestamp = (
+            max(signal_times.values())
+            if signal_times
+            else pd.Timestamp.now(tz="UTC")
+        )
+        risk_update = self.broker.evaluate_account_risk(
+            risk_timestamp
+        )
+
+        pending_before = len(self.broker.pending_orders)
+        if risk_update.state.halted:
+            self.broker.cancel_all_pending(
+                reason="RISK_HALT",
+            )
+        pending_cancelled = (
+            pending_before - len(self.broker.pending_orders)
+        )
 
         results = self._scanner().scan(scan_symbols)
         submitted = 0
@@ -351,6 +546,38 @@ class PaperTradingService:
                 duplicates += 1
                 continue
 
+            if management_errors:
+                self.journal.record_signal(
+                    result.symbol,
+                    self.config.timeframe,
+                    strategy,
+                    signal,
+                    signal_time,
+                    action="REJECTED",
+                    reason=(
+                        "Risk data incomplete because one or more "
+                        "managed markets failed to update."
+                    ),
+                )
+                rejected += 1
+                continue
+
+            if risk_update.state.halted:
+                self.journal.record_signal(
+                    result.symbol,
+                    self.config.timeframe,
+                    strategy,
+                    signal,
+                    signal_time,
+                    action="REJECTED",
+                    reason=(
+                        "Portfolio risk halt active: "
+                        + risk_update.state.halt_reason
+                    ),
+                )
+                rejected += 1
+                continue
+
             if (
                 self.config.market_type == "spot"
                 and result.assessment.signal == Signal.SHORT
@@ -383,6 +610,10 @@ class PaperTradingService:
                 rejected += 1
                 continue
 
+            correlations = self._correlations_for(
+                result.symbol
+            )
+
             try:
                 self.broker.submit_setup(
                     symbol=result.symbol,
@@ -398,6 +629,7 @@ class PaperTradingService:
                     expires_after_bars=(
                         self.config.entry_expiry_bars
                     ),
+                    correlations=correlations,
                 )
             except ValueError as exc:
                 self.journal.record_signal(
@@ -431,6 +663,12 @@ class PaperTradingService:
             closed_trades=closed_trades,
             scan_errors=scan_errors,
             management_errors=management_errors,
+            pending_cancelled_by_risk=pending_cancelled,
+            risk_halted=risk_update.state.halted,
+            risk_reason=risk_update.state.halt_reason,
+            daily_loss_pct=risk_update.daily_loss_pct,
+            weekly_loss_pct=risk_update.weekly_loss_pct,
+            drawdown_pct=risk_update.drawdown_pct,
             snapshot=self.broker.snapshot(),
         )
 

@@ -9,6 +9,7 @@ from trading_bot.paper import (
     PaperJournal,
     PaperServiceConfig,
     PaperTradingService,
+    PortfolioRiskConfig,
 )
 from trading_bot.planning import TradeSetup
 from trading_bot.strategies import SetupAssessment
@@ -436,3 +437,208 @@ def test_service_rejects_restart_with_different_account_invariants(
             scanner_factory=FakeScanner,
         )
     second.close()
+
+
+
+def test_daily_loss_halt_cancels_pending_orders_and_persists(
+    tmp_path,
+):
+    feed = CandleFeed()
+    path = tmp_path / "continuous.db"
+    journal = PaperJournal(path)
+    service = PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT",),
+            fee_rate=0.0,
+            slippage_bps=0.0,
+            portfolio_risk=PortfolioRiskConfig(
+                max_daily_loss_percent=0.02,
+                max_weekly_loss_percent=0.50,
+                max_drawdown_percent=0.50,
+                require_correlation_data=False,
+            ),
+        ),
+        journal=journal,
+        data_fetcher=feed,
+        scanner_factory=FakeScanner,
+    )
+
+    first = service.run_once()
+    assert first.risk_halted is False
+    assert len(service.broker.pending_orders) == 1
+
+    service.broker.realized_net_pnl = -300.0
+    second = service.run_once()
+
+    assert second.risk_halted is True
+    assert "Daily loss limit" in second.risk_reason
+    assert second.pending_cancelled_by_risk == 1
+    assert len(service.broker.pending_orders) == 0
+
+    persisted = journal.load_risk_state()
+    assert persisted is not None
+    assert persisted.halted is True
+    journal.close()
+
+    reopened = PaperJournal(path)
+    restarted = PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT",),
+            fee_rate=0.0,
+            slippage_bps=0.0,
+            portfolio_risk=PortfolioRiskConfig(
+                max_daily_loss_percent=0.02,
+                max_weekly_loss_percent=0.50,
+                max_drawdown_percent=0.50,
+                require_correlation_data=False,
+            ),
+        ),
+        journal=reopened,
+        data_fetcher=feed,
+        scanner_factory=FakeScanner,
+    )
+    assert restarted.broker.risk_halted is True
+    reopened.close()
+
+
+def test_management_error_blocks_new_risk_for_cycle(tmp_path):
+    class PartialFailureFeed(CandleFeed):
+        def __call__(self, symbol, **kwargs):
+            if symbol == "BROKEN/USDT":
+                raise RuntimeError("market data unavailable")
+            return super().__call__(symbol=symbol, **kwargs)
+
+    feed = PartialFailureFeed()
+    journal = PaperJournal(tmp_path / "paper.db")
+    service = PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT", "BROKEN/USDT"),
+            fee_rate=0.0,
+            slippage_bps=0.0,
+            portfolio_risk=PortfolioRiskConfig(
+                require_correlation_data=False,
+            ),
+        ),
+        journal=journal,
+        data_fetcher=feed,
+        scanner_factory=FakeScanner,
+    )
+
+    report = service.run_once()
+
+    assert report.management_errors == 1
+    assert report.submitted_orders == 0
+    assert report.rejected_signals >= 1
+    journal.close()
+
+
+
+def test_service_rejects_silent_risk_policy_change(tmp_path):
+    path = tmp_path / "continuous.db"
+    first = PaperJournal(path)
+    PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT",),
+            portfolio_risk=PortfolioRiskConfig(
+                max_daily_loss_percent=0.02,
+                require_correlation_data=False,
+            ),
+        ),
+        journal=first,
+        data_fetcher=CandleFeed(),
+        scanner_factory=FakeScanner,
+    )
+    first.close()
+
+    second = PaperJournal(path)
+    with pytest.raises(
+        ValueError,
+        match="risk_policy",
+    ):
+        PaperTradingService(
+            config=PaperServiceConfig(
+                exchange_id="fake",
+                market_type="spot",
+                timeframe="1h",
+                symbols=("BTC/USDT",),
+                portfolio_risk=PortfolioRiskConfig(
+                    max_daily_loss_percent=0.03,
+                    require_correlation_data=False,
+                ),
+            ),
+            journal=second,
+            data_fetcher=CandleFeed(),
+            scanner_factory=FakeScanner,
+        )
+    second.close()
+
+
+
+def test_paper_service_uses_scanner_and_universe_quality_settings(
+    tmp_path,
+):
+    captured = {}
+
+    class CapturingUniverse:
+        def __init__(self, **kwargs):
+            captured["universe_init"] = kwargs
+
+        def select(self, config):
+            captured["universe_config"] = config
+            return SimpleNamespace(
+                symbols=["BTC/USDT"]
+            )
+
+    class CapturingScanner:
+        def __init__(self, **kwargs):
+            captured["scanner_init"] = kwargs
+
+        def scan(self, symbols):
+            return []
+
+    journal = PaperJournal(tmp_path / "paper.db")
+    service = PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            confirmation_timeframes=("4h",),
+            entry_timeframe="15m",
+            auto_universe=True,
+            min_history_candles=300,
+            max_history_probes=25,
+            portfolio_risk=PortfolioRiskConfig(
+                require_correlation_data=False,
+            ),
+        ),
+        journal=journal,
+        data_fetcher=CandleFeed(),
+        scanner_factory=CapturingScanner,
+        universe_factory=CapturingUniverse,
+    )
+
+    assert service._resolve_symbols() == ["BTC/USDT"]
+    service._scanner()
+
+    universe_config = captured["universe_config"]
+    assert universe_config.min_history_candles == 300
+    assert universe_config.history_timeframe == "1h"
+    assert universe_config.max_history_probes == 25
+
+    scanner_config = captured["scanner_init"]
+    assert scanner_config["confirmation_timeframes"] == ("4h",)
+    assert scanner_config["entry_timeframe"] == "15m"
+
+    journal.close()
