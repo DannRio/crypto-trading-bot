@@ -10,6 +10,7 @@ from trading_bot.backtesting.metrics import (
 from trading_bot.backtesting.models import BacktestResult, CompletedTrade
 from trading_bot.core.enums import Signal, SetupStatus
 from trading_bot.decision import DecisionEngine
+from trading_bot.strategies import DEFAULT_STRATEGIES
 
 
 def _entry_with_slippage(
@@ -52,6 +53,7 @@ def run_decision_backtest(
     entry_valid_bars: int = 3,
     decision_lookback: int = 250,
     allow_short: bool = True,
+    strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES,
 ) -> BacktestResult:
     """Backtest the same scored decision path used by MarketScanner.
 
@@ -113,6 +115,7 @@ def run_decision_backtest(
                     "entry_time": candle["timestamp"],
                     "entry_fee": entry_fee,
                     "score": pending["assessment"].score,
+                    "strategy": pending["assessment"].strategy,
                     "regime": pending["structure"].regime.value,
                 }
                 pending = None
@@ -185,7 +188,7 @@ def run_decision_backtest(
                         position_size=setup.position_size,
                         pnl=net_pnl,
                         exit_reason=exit_reason,
-                        strategy="trend_continuation",
+                        strategy=position["strategy"],
                         score=position["score"],
                         regime=position["regime"],
                         risk_amount=risk_amount,
@@ -223,6 +226,7 @@ def run_decision_backtest(
                 account_equity=equity,
                 risk_percent=risk_percent,
                 min_confirmed_score=min_confirmed_score,
+                strategy_names=strategy_names,
             ).evaluate(history)
 
             if (
@@ -279,7 +283,7 @@ def run_decision_backtest(
                 position_size=setup.position_size,
                 pnl=net_pnl,
                 exit_reason="END_OF_DATA",
-                strategy="trend_continuation",
+                strategy=position["strategy"],
                 score=position["score"],
                 regime=position["regime"],
                 risk_amount=risk_amount,
