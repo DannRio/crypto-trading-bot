@@ -483,3 +483,35 @@ Safety properties:
 - no exchange API keys, authenticated endpoints, or external orders are used in this phase
 
 This does **not** mean authenticated assisted trading is complete. Real broker authentication, idempotent live order submission, partial-fill handling, exchange reconciliation, and kill-switch integration remain later phases.
+
+
+## Authenticated broker boundary
+
+Version 0.13 introduces an authenticated CCXT broker **preparation boundary**. It is intentionally not a live order adapter yet.
+
+Credentials are loaded from process environment variables only. For an exchange id such as `kucoin`, the default names are:
+
+~~~text
+TRADING_KUCOIN_API_KEY
+TRADING_KUCOIN_SECRET
+TRADING_KUCOIN_PASSWORD   # optional unless the exchange requires it
+TRADING_KUCOIN_UID        # optional unless the exchange requires it
+~~~
+
+Credential values are excluded from dataclass representations so accidental object logging does not print secrets. The adapter also calls CCXT's required-credential validation when available.
+
+The authenticated adapter currently supports:
+
+- exchange credential construction without writing secrets to the repository
+- CCXT required-credential checks
+- explicit, opt-in private read probe through `fetch_balance`
+- market loading before order preparation
+- exchange amount/price precision formatting
+- amount, price, and notional/cost minimum and maximum checks
+- market-active validation
+- market-type and LONG/SHORT capability gates
+- deterministic client-order id derived from the assisted intent id
+
+The adapter's `execute()` method is intentionally hard-disabled. It does **not** call `create_order`. A prepared order must not become live until the order-management layer provides idempotent submission, persistent order state, partial-fill handling, reconciliation, and kill-switch integration.
+
+This boundary follows CCXT's current credential, market-loading, precision, and limit model.
