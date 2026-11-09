@@ -109,6 +109,8 @@ class ManagedLiveBrokerAdapter(BrokerAdapter):
                 "Approved intent expired before live submission."
             )
 
+        self.guard.assert_can_submit()
+
         prepared = self.preparer.prepare_order(
             intent
         )
