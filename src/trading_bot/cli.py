@@ -2,7 +2,11 @@ import argparse
 import os
 
 from trading_bot.core.enums import SetupStatus
-from trading_bot.scanner import MarketScanner
+from trading_bot.scanner import (
+    DynamicMarketUniverse,
+    MarketScanner,
+    UniverseConfig,
+)
 
 
 DEFAULT_SYMBOLS = "BTC/USDT,ETH/USDT,SOL/USDT,XRP/USDT,LINK/USDT,ZEC/USDT"
@@ -38,6 +42,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--min-score", type=int, default=70)
     parser.add_argument("--show-no-trade", action="store_true")
+    parser.add_argument(
+        "--auto-universe",
+        action="store_true",
+        help="Discover and rank liquid markets instead of using --symbols.",
+    )
+    parser.add_argument(
+        "--quote-currencies",
+        default="USDT",
+        help="Comma-separated quote currencies for auto-universe mode.",
+    )
+    parser.add_argument("--max-markets", type=int, default=20)
+    parser.add_argument(
+        "--min-quote-volume",
+        type=float,
+        default=1_000_000,
+        help="Minimum 24h quote volume for auto-universe markets.",
+    )
+    parser.add_argument(
+        "--max-spread-bps",
+        type=float,
+        default=None,
+        help="Optional maximum ticker bid/ask spread in basis points.",
+    )
     return parser
 
 
@@ -116,6 +143,53 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--min-score must be between 0 and 100.")
 
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+    if args.auto_universe:
+        quotes = tuple(
+            value.strip().upper()
+            for value in args.quote_currencies.split(",")
+            if value.strip()
+        )
+        try:
+            selection = DynamicMarketUniverse(
+                exchange_id=args.exchange,
+                market_type=args.market_type,
+            ).select(
+                UniverseConfig(
+                    market_type=args.market_type,
+                    quote_currencies=quotes,
+                    max_markets=args.max_markets,
+                    min_quote_volume=args.min_quote_volume,
+                    max_spread_bps=args.max_spread_bps,
+                )
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise SystemExit(str(exc)) from exc
+
+        symbols = selection.symbols
+        if not symbols:
+            raise SystemExit(
+                "Auto-universe found no markets matching the filters."
+            )
+
+        print(
+            f"Auto-universe: selected {len(symbols)} of "
+            f"{selection.eligible_markets} eligible markets "
+            f"from {selection.total_markets} exchange markets."
+        )
+        for candidate in selection.candidates:
+            spread = (
+                f"{candidate.spread_bps:.1f} bps"
+                if candidate.spread_bps is not None
+                else "spread n/a"
+            )
+            print(
+                f"  {candidate.symbol}: "
+                f"24h quote volume {candidate.quote_volume:,.0f} | "
+                f"{spread}"
+            )
+        for warning in selection.warnings:
+            print(f"Universe warning: {warning}")
+
     confirmation_timeframes = tuple(
         value.strip()
         for value in args.confirm_timeframes.split(",")
