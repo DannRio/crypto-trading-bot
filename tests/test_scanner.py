@@ -35,3 +35,31 @@ def test_cli_parser_accepts_universal_exchange_options():
     assert args.market_type == "swap"
     assert args.symbols == "BTC/USDT:USDT"
     assert args.confirm_timeframes == "1h,4h"
+
+
+
+def test_cli_parser_accepts_auto_universe_options():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--exchange",
+            "kucoin",
+            "--market-type",
+            "spot",
+            "--auto-universe",
+            "--quote-currencies",
+            "USDT,USDC",
+            "--max-markets",
+            "12",
+            "--min-quote-volume",
+            "5000000",
+            "--max-spread-bps",
+            "25",
+        ]
+    )
+
+    assert args.auto_universe is True
+    assert args.quote_currencies == "USDT,USDC"
+    assert args.max_markets == 12
+    assert args.min_quote_volume == 5_000_000
+    assert args.max_spread_bps == 25
