@@ -406,3 +406,58 @@ Use a new journal if those locked assumptions need to change.
 The local web dashboard has a read-only continuous-paper section showing pending/open state, realized P&L, recent trades, checkpoints, and signal decisions. The dashboard does not start, stop, approve, or place orders.
 
 Stopping the daemon does not liquidate paper positions. That is intentional: restart behavior must resemble a persistent trading service rather than a disposable backtest.
+
+
+## Portfolio risk v2
+
+The continuous paper service now has a persistent account-level risk guard. These controls sit at the broker boundary, not inside strategy rules.
+
+Default limits:
+
+- maximum total open + pending risk: 3% of account equity
+- maximum risk in one symbol: 1.5%
+- maximum gross notional: 200% of account equity
+- maximum risk in a correlated P&L bucket: 2%
+- correlation threshold: 0.75
+- daily loss halt: 2%
+- weekly loss halt: 5%
+- portfolio drawdown halt: 10%
+- maximum open positions: 5
+- maximum pending entries: 5
+
+The continuous service estimates rolling primary-timeframe return correlations using 120 observations by default and requires at least 60 aligned return samples. Correlation is adjusted for trade direction: positively correlated same-direction positions and negatively correlated opposite-direction positions both increase concentrated P&L risk.
+
+Example with stricter risk limits:
+
+~~~powershell
+crypto-paper daemon --exchange kucoin --market-type spot --auto-universe --timeframe 15m --confirm-timeframes 1h,4h --max-open-risk-percent 2 --max-symbol-risk-percent 1 --max-gross-notional-percent 100 --max-correlated-risk-percent 1.5 --max-daily-loss-percent 1.5 --max-weekly-loss-percent 4 --max-drawdown-percent 8
+~~~
+
+When a daily, weekly, or drawdown limit is breached:
+
+1. the halt is persisted in the continuous paper journal
+2. all pending entries are cancelled
+3. no new risk can be opened
+4. existing open positions continue to be managed by their existing stop/target plan
+5. restarting the service does not clear the halt
+
+Inspect the state:
+
+~~~powershell
+crypto-paper risk-status
+~~~
+
+A halt never resets automatically. Before manually resetting it, refresh account marks with the same daemon configuration:
+
+~~~powershell
+crypto-paper daemon --exchange kucoin --market-type spot --auto-universe --timeframe 15m --confirm-timeframes 1h,4h --once
+crypto-paper risk-reset --confirm RESET
+~~~
+
+`risk-reset` refuses stale risk state by default. This is intentional; a kill state should not be cleared using an old account valuation.
+
+The risk policy itself is stored with the continuous journal. Changing risk thresholds silently against an existing journal is rejected for auditability; use the original policy or deliberately start a new journal.
+
+The web dashboard displays the persistent risk halt, reason, daily loss, weekly loss, and drawdown.
+
+Correlation data is required by default when adding exposure alongside another symbol. `--allow-missing-correlation-data` exists for research/debugging but weakens the risk gate and should not be the normal operating mode.
