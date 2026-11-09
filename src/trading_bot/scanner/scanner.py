@@ -14,6 +14,10 @@ from trading_bot.scanner.multi_timeframe import (
     regime_alignment,
     validate_confirmation_timeframes,
 )
+from trading_bot.strategies import (
+    DEFAULT_STRATEGIES,
+    normalize_strategy_names,
+)
 
 
 class MarketScanner:
@@ -27,6 +31,7 @@ class MarketScanner:
         account_equity: float = 10_000,
         risk_percent: float = 0.01,
         min_confirmed_score: int = 70,
+        strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES,
         data_fetcher: Callable = get_ohlcv,
     ):
         self.exchange_id = exchange_id
@@ -42,6 +47,9 @@ class MarketScanner:
         self.account_equity = account_equity
         self.risk_percent = risk_percent
         self.min_confirmed_score = min_confirmed_score
+        self.strategy_names = normalize_strategy_names(
+            strategy_names
+        )
         self.data_fetcher = data_fetcher
 
     def _fetch_closed(
@@ -146,6 +154,7 @@ class MarketScanner:
                 account_equity=self.account_equity,
                 risk_percent=self.risk_percent,
                 min_confirmed_score=self.min_confirmed_score,
+                strategy_names=self.strategy_names,
             ).evaluate(data)
 
             confirmations = self._confirmation_context(
