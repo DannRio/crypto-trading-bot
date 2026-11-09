@@ -290,3 +290,36 @@ coverage, then writes into the same local `data/history/` store. Use
 exchange and spot/swap/future instrument, uses trading-price candles,
 has unadjusted volumes and is not a mixture of venues. CSV imports
 cannot cryptographically prove provenance.
+
+
+## Troubleshooting local dashboard backtests
+
+Scanner and backtest market settings are independent in the dashboard.
+A saved CSV is matched by the **exact** exchange ID, market type,
+symbol and timeframe used when downloading it. For example:
+
+```text
+data/history/kucoin/spot/BTC_USDT/1h.csv
+```
+
+Select **Local historical dataset → Find saved history**, choose
+`kucoin · spot · BTC/USDT · 1h`, then **Check selected dataset**.
+The dashboard shows the actual file path, candle count and first/last date
+before running the backtest. This prevents a scan for another market
+(e.g. Kraken SOL futures) from accidentally changing your backtest target.
+
+When no files appear, run the application from the repository root
+(the folder containing `data/history/`) and verify the correct branch:
+
+```powershell
+git fetch origin
+git switch fix/dashboard-local-backtest-lookup
+python -m pip install -e ".[dev]"
+python -m uvicorn trading_bot.web.app:app --host 127.0.0.1 --port 8000
+```
+
+If the file is present but the backtest still fails, inspect the Python
+terminal where Uvicorn runs for the traceback. The UI now distinguishes
+missing datasets from errors in simulation code. The read-only endpoints
+`/api/history/datasets` and `/api/history/check` can diagnose path
+mismatches without contacting an exchange.

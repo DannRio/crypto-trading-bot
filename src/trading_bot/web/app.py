@@ -91,6 +91,79 @@ def health():
 
 
 
+
+def _saved_datasets() -> list[dict]:
+    """Read-only discovery of local archive paths; never contact an exchange.
+
+    Existing history files encode symbols in a directory name. Only infer
+    unambiguous spot symbols; leave complex instruments for manual entry.
+    """
+    store = HistoricalDataStore()
+    root = store.root
+    if not root.exists():
+        return []
+    datasets = []
+    for path in sorted(root.glob("*/*/*/*.csv"))[:500]:
+        relative = path.relative_to(root)
+        exchange, market_type, encoded, filename = relative.parts
+        if exchange not in EXCHANGES or market_type not in MARKET_TYPES:
+            continue
+        symbol = None
+        if market_type == "spot" and encoded.count("_") == 1:
+            base, quote = encoded.split("_")
+            if base and quote:
+                symbol = f"{base}/{quote}"
+        datasets.append({
+            "exchange": exchange,
+            "market_type": market_type,
+            "symbol": symbol,
+            "stored_symbol": encoded,
+            "timeframe": path.stem,
+            "path": str(path),
+        })
+    return datasets
+
+
+@app.get("/api/history/datasets")
+def history_datasets():
+    """List local historical files without loading them or making network calls."""
+    return {"datasets": _saved_datasets()}
+
+
+@app.get("/api/history/check")
+def history_check(
+    exchange: str = Query("kucoin"),
+    market_type: str = Query("spot"),
+    symbol: str = Query("BTC/USDT", max_length=50),
+    timeframe: str = Query("1h"),
+):
+    _validate_exchange(exchange, market_type, timeframe)
+    symbol = _validate_symbol(symbol)
+    store = HistoricalDataStore()
+    path = store.dataset_path(exchange, market_type, symbol, timeframe)
+    if not path.is_file():
+        return {
+            "found": False, "path": str(path),
+            "message": "No matching saved dataset. The market and timeframe "
+                       "must match the archive download settings.",
+        }
+    try:
+        candles = store.load(exchange, market_type, symbol, timeframe)
+        if candles.empty:
+            return {"found": False, "path": str(path),
+                    "message": "Saved dataset is empty."}
+        return {
+            "found": True,
+            "path": str(path),
+            "rows": len(candles),
+            "start": candles["timestamp"].min().isoformat(),
+            "end": candles["timestamp"].max().isoformat(),
+        }
+    except Exception:
+        log.exception("Could not inspect saved history dataset")
+        raise HTTPException(422, "Saved history cannot be read as OHLCV data.")
+
+
 @app.get("/api/markets")
 def markets(
     exchange: str = Query("kraken", max_length=30),
@@ -176,10 +249,13 @@ def backtest(
                 exchange, market_type, symbol, timeframe
             )
             if closed.empty:
+                expected = HistoricalDataStore().dataset_path(
+                    exchange, market_type, symbol, timeframe
+                )
                 raise HTTPException(
-                    422,
-                    "No local history found. Use crypto-research download "
-                    "from the terminal first.",
+                    422, "No local history for this exact market. Expected: "
+                    f"{expected}. Check exchange, type, symbol, timeframe "
+                    "or select an available saved dataset in the dashboard.",
                 )
         else:
             candles = get_ohlcv(
