@@ -21,6 +21,7 @@ from trading_bot.scanner import (
     MarketScanner,
     UniverseConfig,
 )
+from trading_bot.strategies import normalize_strategy_names
 
 log = logging.getLogger(__name__)
 app = FastAPI(title="Trading Bot — Read-only Research Dashboard", version="0.1.0")
@@ -85,6 +86,18 @@ def _parse_quotes(raw: str) -> tuple[str, ...]:
     return values
 
 
+def _parse_strategies(raw: str) -> tuple[str, ...]:
+    values = tuple(
+        value.strip()
+        for value in raw.split(",")
+        if value.strip()
+    )
+    try:
+        return normalize_strategy_names(values)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 def _parse_timeframes(raw: str) -> tuple[str, ...]:
     values = tuple(
         value.strip()
@@ -127,6 +140,7 @@ def scan(
     equity: float = Query(10000.0, gt=0, le=100_000_000),
     risk_percent: float = Query(1.0, gt=0, le=5),
     min_score: int = Query(70, ge=0, le=100),
+    strategies: str = Query("trend_continuation", max_length=200),
     auto_universe: bool = Query(False),
     quote_currencies: str = Query("USDT", max_length=100),
     max_markets: int = Query(20, ge=1, le=50),
@@ -135,6 +149,7 @@ def scan(
 ):
     _validate_exchange(exchange, market_type, timeframe)
     confirmation_timeframes = _parse_timeframes(confirm_timeframes)
+    strategy_names = _parse_strategies(strategies)
     universe_selection = None
 
     if auto_universe:
@@ -180,6 +195,7 @@ def scan(
             account_equity=equity,
             risk_percent=risk_percent / 100,
             min_confirmed_score=min_score,
+            strategy_names=strategy_names,
         )
         results = scanner.scan(markets)
     except ValueError as exc:
@@ -196,6 +212,11 @@ def scan(
             "status": result.assessment.status.value if result.assessment else "ERROR",
             "signal": result.assessment.signal.value if result.assessment else "NO_TRADE",
             "score": result.score,
+            "strategy": (
+                result.assessment.strategy
+                if result.assessment
+                else None
+            ),
             "reason": result.assessment.reason if result.assessment else None,
             "structure": _safe(result.structure),
             "setup": _safe(result.setup),
@@ -211,6 +232,9 @@ def scan(
                 "multi_timeframe_aligned",
                 None,
             ),
+            "candidates": _safe(
+                getattr(result, "candidates", ())
+            ),
             # Errors may contain upstream request details; do not expose them.
             "error": "Market data or analysis unavailable." if result.error else None,
         })
@@ -219,6 +243,7 @@ def scan(
         "market_type": market_type,
         "timeframe": timeframe,
         "confirmation_timeframes": list(confirmation_timeframes),
+        "strategies": list(strategy_names),
         "auto_universe": auto_universe,
         "universe": _safe(universe_selection),
         "results": output,
@@ -235,11 +260,14 @@ def backtest(
     limit: int = Query(720, ge=250, le=1000),
     equity: float = Query(10000.0, gt=0, le=100_000_000),
     risk_percent: float = Query(1.0, gt=0, le=5),
+    min_score: int = Query(70, ge=0, le=100),
+    strategies: str = Query("trend_continuation", max_length=200),
     fee_rate: float = Query(0.001, ge=0, le=0.05),
     slippage_bps: float = Query(5.0, ge=0, le=500),
 ):
     _validate_exchange(exchange, market_type, timeframe)
     symbol = _validate_symbol(symbol)
+    strategy_names = _parse_strategies(strategies)
     try:
         candles = get_ohlcv(
             symbol=symbol, timeframe=timeframe, limit=limit,
@@ -254,10 +282,11 @@ def backtest(
             closed,
             initial_equity=equity,
             risk_percent=risk_percent / 100,
-            min_confirmed_score=70,
+            min_confirmed_score=min_score,
             fee_rate=fee_rate,
             slippage_bps=slippage_bps,
             allow_short=market_type != "spot",
+            strategy_names=strategy_names,
         )
     except HTTPException:
         raise
@@ -267,7 +296,12 @@ def backtest(
     return {
         "symbol": symbol, "exchange": exchange, "timeframe": timeframe,
         "data_rows": len(closed),
-        "assumptions": {"fee_rate_per_side": fee_rate, "slippage_bps_per_side": slippage_bps},
+        "strategies": list(strategy_names),
+        "assumptions": {
+            "fee_rate_per_side": fee_rate,
+            "slippage_bps_per_side": slippage_bps,
+            "min_score": min_score,
+        },
         "metrics": _safe({
             "initial_equity": result.initial_equity,
             "final_equity": result.final_equity,
