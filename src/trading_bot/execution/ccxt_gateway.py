@@ -112,6 +112,11 @@ def normalize_ccxt_order(
         status=status,
         filled_amount=filled,
         average_price=average,
+        symbol=(
+            str(order.get("symbol"))
+            if order.get("symbol")
+            else None
+        ),
         message=(
             "Normalized from CCXT unified order "
             f"status={status_raw or 'unknown'}."
@@ -414,6 +419,7 @@ class CCXTOrderGateway(OrderGateway):
             status=ManagedOrderStatus.CANCELLED,
             filled_amount=0.0,
             average_price=None,
+            symbol=symbol,
             message=(
                 "Exchange acknowledged cancellation but did not "
                 "return a queryable unified order."
