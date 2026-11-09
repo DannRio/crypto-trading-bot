@@ -68,6 +68,27 @@ def _parse_symbols(raw: str) -> list[str]:
     return symbols
 
 
+def _parse_timeframes(raw: str) -> tuple[str, ...]:
+    values = tuple(
+        value.strip()
+        for value in raw.split(",")
+        if value.strip()
+    )
+    if len(set(values)) != len(values):
+        raise HTTPException(422, "Confirmation timeframes must be unique.")
+    unsupported = [
+        value for value in values
+        if value not in TIMEFRAMES
+    ]
+    if unsupported:
+        raise HTTPException(
+            422,
+            "Unsupported confirmation timeframe: "
+            + ", ".join(unsupported),
+        )
+    return values
+
+
 @app.get("/")
 def index():
     return FileResponse(PAGE)
@@ -84,6 +105,7 @@ def scan(
     market_type: str = Query("spot"),
     symbols: str = Query("BTC/USD,ETH/USD", max_length=400),
     timeframe: str = Query("15m"),
+    confirm_timeframes: str = Query("", max_length=100),
     limit: int = Query(500, ge=250, le=1000),
     equity: float = Query(10000.0, gt=0, le=100_000_000),
     risk_percent: float = Query(1.0, gt=0, le=5),
@@ -91,14 +113,21 @@ def scan(
 ):
     _validate_exchange(exchange, market_type, timeframe)
     markets = _parse_symbols(symbols)
-    scanner = MarketScanner(
-        exchange_id=exchange, market_type=market_type,
-        timeframe=timeframe, candle_limit=limit,
-        account_equity=equity, risk_percent=risk_percent / 100,
-        min_confirmed_score=min_score,
-    )
+    confirmation_timeframes = _parse_timeframes(confirm_timeframes)
     try:
+        scanner = MarketScanner(
+            exchange_id=exchange,
+            market_type=market_type,
+            timeframe=timeframe,
+            confirmation_timeframes=confirmation_timeframes,
+            candle_limit=limit,
+            account_equity=equity,
+            risk_percent=risk_percent / 100,
+            min_confirmed_score=min_score,
+        )
         results = scanner.scan(markets)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     except Exception:
         log.exception("Scanner failure")
         raise HTTPException(502, "Could not scan requested markets.")
@@ -115,12 +144,28 @@ def scan(
             "structure": _safe(result.structure),
             "setup": _safe(result.setup),
             "data_quality": _safe(result.data_quality),
+            "primary_assessment": _safe(
+                getattr(result, "primary_assessment", None)
+            ),
+            "confirmations": _safe(
+                getattr(result, "confirmations", ())
+            ),
+            "multi_timeframe_aligned": getattr(
+                result,
+                "multi_timeframe_aligned",
+                None,
+            ),
             # Errors may contain upstream request details; do not expose them.
             "error": "Market data or analysis unavailable." if result.error else None,
         })
-    return {"exchange": exchange, "market_type": market_type,
-            "timeframe": timeframe, "results": output,
-            "live_execution": False}
+    return {
+        "exchange": exchange,
+        "market_type": market_type,
+        "timeframe": timeframe,
+        "confirmation_timeframes": list(confirmation_timeframes),
+        "results": output,
+        "live_execution": False,
+    }
 
 
 @app.get("/api/backtest")
