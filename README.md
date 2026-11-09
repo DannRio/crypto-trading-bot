@@ -18,7 +18,7 @@ A Python engine for scanning crypto markets, producing rule-qualified trade setu
 - Scanner-aligned backtester with fees, slippage, drawdown, win rate, profit factor, and R-multiples.
 - Paginated multi-year historical downloader and local dataset store.
 - Batch research across multiple symbols and timeframes.
-- Read-only local web dashboard.
+- Local research dashboard with dry-run assisted approval; live execution remains disabled.
 
 The engine deliberately does **not** place live orders yet. Execution should consume validated setups only after out-of-sample and paper-trading validation.
 
@@ -446,3 +446,40 @@ The reset command refuses to act on stale risk state by default. Run the paper d
 The dashboard paper-service section also shows whether portfolio risk is OK or HALTED, the halt reason, last evaluated equity, and peak equity.
 
 The continuous paper service uses the same scanner hierarchy and market-quality gates as interactive scans: higher-timeframe regime confirmation, optional lower-timeframe entry confirmation, liquid-market filtering, spread filtering, and minimum-history preflight.
+
+
+## Assisted trading v1
+
+The local dashboard can now stage a **server-generated** confirmed setup into a persistent approval queue. The browser never supplies its own entry, stop, target, size, or risk plan; staging rescans the selected market on the server and hashes the resulting immutable plan.
+
+Workflow:
+
+1. Scan markets.
+2. A CONFIRMED setup can be **Staged**.
+3. The intent is persisted with the source closed-candle time, strategy, score, complete risk plan, deterministic fingerprint, and SHA-256 plan hash.
+4. The operator enters an approval actor and chooses **Approve** or **Reject**.
+5. Approval passes through the broker-adapter capability gate.
+6. The current adapter is **DRY RUN only** and returns an execution receipt without contacting an exchange.
+
+The assisted database defaults to:
+
+~~~text
+data/assisted/assisted.db
+~~~
+
+and is ignored by Git. It can be overridden with the `TRADING_ASSISTED_DB` environment variable.
+
+Safety properties:
+
+- only CONFIRMED scanner results with a complete trade plan can be staged
+- the signal candle timestamp is stored as intent provenance
+- duplicate signal + plan combinations are suppressed
+- intents expire after their approval window
+- plan JSON is verified against its persisted hash whenever it is loaded
+- spot SHORT intents fail broker capability checks
+- rejected or expired intents cannot later be approved
+- approval and execution receipt are separate audit records
+- the dry-run adapter advertises `live_execution = false`
+- no exchange API keys, authenticated endpoints, or external orders are used in this phase
+
+This does **not** mean authenticated assisted trading is complete. Real broker authentication, idempotent live order submission, partial-fill handling, exchange reconciliation, and kill-switch integration remain later phases.
