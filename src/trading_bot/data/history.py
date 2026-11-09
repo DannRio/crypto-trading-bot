@@ -370,15 +370,15 @@ def import_history_csv(
     if not quality.valid:
         raise ValueError("CSV has invalid OHLCV data: " + "; ".join(quality.issues))
 
+    first, last = _utc_timestamp(start), _utc_timestamp(end)
+    frame = frame.loc[
+        (frame["timestamp"] >= first) & (frame["timestamp"] < last)
+    ].copy()
     report = assess_history_coverage(frame, start, end, timeframe)
     if strict_coverage and not report.complete:
         raise IncompleteHistoryError(
             f"Imported CSV does not cover requested history: {report.summary()}."
         )
-    first, last = _utc_timestamp(start), _utc_timestamp(end)
-    frame = frame.loc[
-        (frame["timestamp"] >= first) & (frame["timestamp"] < last)
-    ].copy()
     (store or HistoricalDataStore()).upsert(
         exchange_id, market_type, symbol, timeframe, frame
     )
