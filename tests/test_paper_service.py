@@ -9,6 +9,7 @@ from trading_bot.paper import (
     PaperJournal,
     PaperServiceConfig,
     PaperTradingService,
+    PortfolioRiskConfig,
 )
 from trading_bot.planning import TradeSetup
 from trading_bot.strategies import SetupAssessment
@@ -436,3 +437,271 @@ def test_service_rejects_restart_with_different_account_invariants(
             scanner_factory=FakeScanner,
         )
     second.close()
+
+
+
+def test_daily_loss_halt_cancels_pending_orders_and_persists(
+    tmp_path,
+):
+    feed = CandleFeed()
+    path = tmp_path / "continuous.db"
+    journal = PaperJournal(path)
+    service = PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT",),
+            fee_rate=0.0,
+            slippage_bps=0.0,
+            portfolio_risk=PortfolioRiskConfig(
+                max_daily_loss_percent=0.02,
+                max_weekly_loss_percent=0.50,
+                max_drawdown_percent=0.50,
+                require_correlation_data=False,
+            ),
+        ),
+        journal=journal,
+        data_fetcher=feed,
+        scanner_factory=FakeScanner,
+    )
+
+    first = service.run_once()
+    assert first.risk_halted is False
+    assert len(service.broker.pending_orders) == 1
+
+    service.broker.realized_net_pnl = -300.0
+    second = service.run_once()
+
+    assert second.risk_halted is True
+    assert "Daily loss limit" in second.risk_reason
+    assert second.pending_cancelled_by_risk == 1
+    assert len(service.broker.pending_orders) == 0
+
+    persisted = journal.load_risk_state()
+    assert persisted is not None
+    assert persisted.halted is True
+    journal.close()
+
+    reopened = PaperJournal(path)
+    restarted = PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT",),
+            fee_rate=0.0,
+            slippage_bps=0.0,
+            portfolio_risk=PortfolioRiskConfig(
+                max_daily_loss_percent=0.02,
+                max_weekly_loss_percent=0.50,
+                max_drawdown_percent=0.50,
+                require_correlation_data=False,
+            ),
+        ),
+        journal=reopened,
+        data_fetcher=feed,
+        scanner_factory=FakeScanner,
+    )
+    assert restarted.broker.risk_halted is True
+    reopened.close()
+
+
+def test_management_error_blocks_new_risk_for_cycle(tmp_path):
+    class PartialFailureFeed(CandleFeed):
+        def __call__(self, symbol, **kwargs):
+            if symbol == "BROKEN/USDT":
+                raise RuntimeError("market data unavailable")
+            return super().__call__(symbol=symbol, **kwargs)
+
+    feed = PartialFailureFeed()
+    journal = PaperJournal(tmp_path / "paper.db")
+    service = PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT", "BROKEN/USDT"),
+            fee_rate=0.0,
+            slippage_bps=0.0,
+            portfolio_risk=PortfolioRiskConfig(
+                require_correlation_data=False,
+            ),
+        ),
+        journal=journal,
+        data_fetcher=feed,
+        scanner_factory=FakeScanner,
+    )
+
+    report = service.run_once()
+
+    assert report.management_errors == 1
+    assert report.submitted_orders == 0
+    assert report.rejected_signals >= 1
+    journal.close()
+
+
+
+def test_service_rejects_silent_risk_policy_change(tmp_path):
+    path = tmp_path / "continuous.db"
+    first = PaperJournal(path)
+    PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT",),
+            portfolio_risk=PortfolioRiskConfig(
+                max_daily_loss_percent=0.02,
+                require_correlation_data=False,
+            ),
+        ),
+        journal=first,
+        data_fetcher=CandleFeed(),
+        scanner_factory=FakeScanner,
+    )
+    first.close()
+
+    second = PaperJournal(path)
+    with pytest.raises(
+        ValueError,
+        match="risk_policy",
+    ):
+        PaperTradingService(
+            config=PaperServiceConfig(
+                exchange_id="fake",
+                market_type="spot",
+                timeframe="1h",
+                symbols=("BTC/USDT",),
+                portfolio_risk=PortfolioRiskConfig(
+                    max_daily_loss_percent=0.03,
+                    require_correlation_data=False,
+                ),
+            ),
+            journal=second,
+            data_fetcher=CandleFeed(),
+            scanner_factory=FakeScanner,
+        )
+    second.close()
+
+
+
+class CorrelatedFeed:
+    def __call__(
+        self,
+        symbol,
+        timeframe="1h",
+        limit=500,
+        **kwargs,
+    ):
+        rows = 140
+        base = [
+            100.0 + index * 0.25
+            for index in range(rows)
+        ]
+        if symbol == "ETH/USDT":
+            base = [
+                value * 2.0
+                for value in base
+            ]
+        return pd.DataFrame(
+            {
+                "timestamp": pd.date_range(
+                    "2026-01-01",
+                    periods=rows,
+                    freq="1h",
+                    tz="UTC",
+                ),
+                "open": base,
+                "high": [value + 1 for value in base],
+                "low": [value - 1 for value in base],
+                "close": base,
+                "volume": [1000.0] * rows,
+            }
+        )
+
+
+class HighRiskScanner:
+    def __init__(self, **kwargs):
+        pass
+
+    def scan(self, symbols):
+        results = []
+        for symbol in symbols:
+            assessment = SetupAssessment(
+                signal=Signal.LONG,
+                status=SetupStatus.CONFIRMED,
+                score=80,
+                reason="correlated test",
+                reasons=("correlated test",),
+                strategy="trend_continuation",
+            )
+            setup = long_setup()
+            setup = TradeSetup(
+                signal=setup.signal,
+                status=setup.status,
+                score=setup.score,
+                reference_entry=setup.reference_entry,
+                entry_low=setup.entry_low,
+                entry_high=setup.entry_high,
+                stop_loss=setup.stop_loss,
+                take_profit_1=setup.take_profit_1,
+                take_profit_2=setup.take_profit_2,
+                reward_to_risk_1=setup.reward_to_risk_1,
+                reward_to_risk_2=setup.reward_to_risk_2,
+                position_size=setup.position_size,
+                notional_value=setup.notional_value,
+                target_risk_amount=120.0,
+                actual_risk_amount=120.0,
+                reasons=setup.reasons,
+            )
+            results.append(
+                SimpleNamespace(
+                    symbol=symbol,
+                    timeframe="1h",
+                    assessment=assessment,
+                    setup=setup,
+                    structure=SimpleNamespace(
+                        regime=MarketRegime.BULL_TREND
+                    ),
+                    error=None,
+                )
+            )
+        return results
+
+
+def test_service_applies_correlation_limit_to_new_setups(tmp_path):
+    journal = PaperJournal(tmp_path / "paper.db")
+    service = PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            symbols=("BTC/USDT", "ETH/USDT"),
+            fee_rate=0.0,
+            slippage_bps=0.0,
+            portfolio_risk=PortfolioRiskConfig(
+                max_open_risk_percent=0.05,
+                max_symbol_risk_percent=0.02,
+                max_correlated_risk_percent=0.02,
+                correlation_threshold=0.75,
+                require_correlation_data=True,
+            ),
+        ),
+        journal=journal,
+        data_fetcher=CorrelatedFeed(),
+        scanner_factory=HighRiskScanner,
+    )
+
+    report = service.run_once()
+
+    assert report.submitted_orders == 1
+    assert report.rejected_signals == 1
+    events = journal.signal_events(limit=10)
+    assert (
+        events["reason"]
+        .fillna("")
+        .str.contains("correlated-risk")
+        .any()
+    )
+    journal.close()

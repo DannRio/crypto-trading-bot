@@ -5,7 +5,10 @@ import numpy as np
 import pandas as pd
 from fastapi.testclient import TestClient
 
-from trading_bot.paper import PaperJournal
+from trading_bot.paper import (
+    PaperJournal,
+    PortfolioRiskManager,
+)
 from trading_bot.scanner import MarketCandidate, UniverseSelection
 from trading_bot.web import app as web
 
@@ -248,6 +251,17 @@ def test_paper_status_endpoint_reads_persistent_service_state(
         "1h",
         checkpoint,
     )
+    manager = PortfolioRiskManager()
+    risk_state = manager.initialize_state(
+        10_000,
+        checkpoint,
+    )
+    risk_state = manager.update_state(
+        risk_state,
+        9_700,
+        checkpoint + pd.Timedelta(minutes=1),
+    ).state
+    journal.save_risk_state(risk_state)
     journal.record_signal(
         "BTC/USDT",
         "1h",
@@ -271,6 +285,8 @@ def test_paper_status_endpoint_reads_persistent_service_state(
     assert body["summary"]["pending_orders"] == 0
     assert body["summary"]["open_positions"] == 0
     assert body["summary"]["realized_net_pnl"] == 0.0
+    assert body["risk_state"]["halted"] is True
+    assert "Daily loss limit" in body["risk_state"]["halt_reason"]
     assert len(body["checkpoints"]) == 1
     assert body["checkpoints"][0]["symbol"] == "BTC/USDT"
     assert len(body["recent_signals"]) == 1
