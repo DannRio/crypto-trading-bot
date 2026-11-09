@@ -289,11 +289,11 @@ def main(argv=None) -> int:
             return 0
 
         if args.command == "trip":
-            guard.trip(
-                actor=args.actor,
-                reason=args.reason,
-            )
             if args.no_cancel:
+                guard.trip(
+                    actor=args.actor,
+                    reason=args.reason,
+                )
                 print(
                     _json(
                         {
@@ -377,6 +377,29 @@ def main(argv=None) -> int:
                         guard=guard,
                     )
                 )
+
+                preflight = ReconciliationService(
+                    order_store,
+                    live_broker.manager,
+                    live_broker.gateway,
+                    guard,
+                ).reconcile_all(
+                    halt_on_orphan=True,
+                    cancel_orphans=False,
+                    actor="LIVE_PREFLIGHT",
+                )
+                if (
+                    preflight.missing_on_exchange
+                    or preflight.orphaned_exchange_orders
+                    or preflight.errors
+                ):
+                    raise RuntimeError(
+                        "Live submission blocked by unresolved "
+                        "exchange reconciliation. Run crypto-execution "
+                        "reconcile and resolve the halt first."
+                    )
+                guard.assert_can_submit()
+
                 receipt = live_broker.execute(
                     intent
                 )
