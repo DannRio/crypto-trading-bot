@@ -583,3 +583,62 @@ def test_service_rejects_silent_risk_policy_change(tmp_path):
             scanner_factory=FakeScanner,
         )
     second.close()
+
+
+
+def test_paper_service_uses_scanner_and_universe_quality_settings(
+    tmp_path,
+):
+    captured = {}
+
+    class CapturingUniverse:
+        def __init__(self, **kwargs):
+            captured["universe_init"] = kwargs
+
+        def select(self, config):
+            captured["universe_config"] = config
+            return SimpleNamespace(
+                symbols=["BTC/USDT"]
+            )
+
+    class CapturingScanner:
+        def __init__(self, **kwargs):
+            captured["scanner_init"] = kwargs
+
+        def scan(self, symbols):
+            return []
+
+    journal = PaperJournal(tmp_path / "paper.db")
+    service = PaperTradingService(
+        config=PaperServiceConfig(
+            exchange_id="fake",
+            market_type="spot",
+            timeframe="1h",
+            confirmation_timeframes=("4h",),
+            entry_timeframe="15m",
+            auto_universe=True,
+            min_history_candles=300,
+            max_history_probes=25,
+            portfolio_risk=PortfolioRiskConfig(
+                require_correlation_data=False,
+            ),
+        ),
+        journal=journal,
+        data_fetcher=CandleFeed(),
+        scanner_factory=CapturingScanner,
+        universe_factory=CapturingUniverse,
+    )
+
+    assert service._resolve_symbols() == ["BTC/USDT"]
+    service._scanner()
+
+    universe_config = captured["universe_config"]
+    assert universe_config.min_history_candles == 300
+    assert universe_config.history_timeframe == "1h"
+    assert universe_config.max_history_probes == 25
+
+    scanner_config = captured["scanner_init"]
+    assert scanner_config["confirmation_timeframes"] == ("4h",)
+    assert scanner_config["entry_timeframe"] == "15m"
+
+    journal.close()
