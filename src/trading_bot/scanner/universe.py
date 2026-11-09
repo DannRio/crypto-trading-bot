@@ -1,7 +1,28 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import math
+import re
 
 from trading_bot.exchanges import CCXTClient
+
+
+STABLE_BASES = frozenset(
+    {
+        "USDT",
+        "USDC",
+        "DAI",
+        "TUSD",
+        "FDUSD",
+        "USDE",
+        "PYUSD",
+        "USDP",
+        "FRAX",
+    }
+)
+
+LEVERAGED_BASE_PATTERN = re.compile(
+    r"(?:[235]L|[235]S|UP|DOWN|BULL|BEAR)$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -12,6 +33,11 @@ class UniverseConfig:
     min_quote_volume: float = 0.0
     max_spread_bps: float | None = None
     active_only: bool = True
+    exclude_stablecoin_bases: bool = True
+    exclude_leveraged_tokens: bool = True
+    min_history_candles: int = 0
+    history_timeframe: str = "1h"
+    max_history_probes: int = 60
 
     def __post_init__(self):
         if self.max_markets <= 0:
@@ -25,6 +51,20 @@ class UniverseConfig:
             raise ValueError("max_spread_bps must be positive.")
         if not self.quote_currencies:
             raise ValueError("At least one quote currency is required.")
+        if self.min_history_candles < 0:
+            raise ValueError("min_history_candles cannot be negative.")
+        if self.max_history_probes <= 0:
+            raise ValueError("max_history_probes must be positive.")
+        if (
+            self.min_history_candles > 0
+            and self.max_history_probes < self.max_markets
+        ):
+            raise ValueError(
+                "max_history_probes must be at least max_markets "
+                "when history validation is enabled."
+            )
+        if not self.history_timeframe.strip():
+            raise ValueError("history_timeframe cannot be empty.")
 
 
 @dataclass(frozen=True)
@@ -39,6 +79,7 @@ class MarketCandidate:
     bid: float | None
     ask: float | None
     spread_bps: float | None
+    history_candles: int | None = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +148,10 @@ def _market_type_matches(
     return bool(market.get(market_type))
 
 
+def _is_leveraged_base(base: str) -> bool:
+    return bool(LEVERAGED_BASE_PATTERN.search(base.upper()))
+
+
 class DynamicMarketUniverse:
     def __init__(
         self,
@@ -130,7 +175,7 @@ class DynamicMarketUniverse:
         try:
             tickers = self.client.fetch_tickers(symbols)
             return tickers or {}, ()
-        except (NotImplementedError, Exception) as exc:
+        except Exception as exc:
             warnings.append(
                 "Bulk ticker discovery unavailable; falling back to "
                 "rate-limited per-market ticker requests."
@@ -149,6 +194,54 @@ class DynamicMarketUniverse:
                     "eligible market."
                 ) from exc
             return tickers, tuple(warnings)
+
+    def _history_validated(
+        self,
+        candidates: list[MarketCandidate],
+        config: UniverseConfig,
+        rejected: dict[str, int],
+        warnings: list[str],
+    ) -> list[MarketCandidate]:
+        if config.min_history_candles <= 0:
+            return candidates[: config.max_markets]
+
+        selected: list[MarketCandidate] = []
+        probes = 0
+
+        for candidate in candidates:
+            if len(selected) >= config.max_markets:
+                break
+            if probes >= config.max_history_probes:
+                warnings.append(
+                    "History-probe limit reached before the universe "
+                    "could be fully populated."
+                )
+                break
+
+            probes += 1
+            try:
+                candles = self.client.fetch_ohlcv(
+                    candidate.symbol,
+                    timeframe=config.history_timeframe,
+                    limit=config.min_history_candles,
+                )
+            except Exception:
+                rejected["history_unavailable"] += 1
+                continue
+
+            history_count = len(candles or [])
+            if history_count < config.min_history_candles:
+                rejected["insufficient_history"] += 1
+                continue
+
+            selected.append(
+                replace(
+                    candidate,
+                    history_candles=history_count,
+                )
+            )
+
+        return selected
 
     def select(
         self,
@@ -169,9 +262,14 @@ class DynamicMarketUniverse:
             "quote": 0,
             "inactive": 0,
             "missing_symbol": 0,
+            "stable_base": 0,
+            "leveraged_token": 0,
             "missing_volume": 0,
             "low_volume": 0,
+            "missing_spread": 0,
             "wide_spread": 0,
+            "history_unavailable": 0,
+            "insufficient_history": 0,
         }
 
         eligible: dict[str, dict] = {}
@@ -205,11 +303,27 @@ class DynamicMarketUniverse:
                 rejected["missing_symbol"] += 1
                 continue
 
+            base = str(market.get("base") or "").upper()
+            if (
+                config.exclude_stablecoin_bases
+                and base in STABLE_BASES
+            ):
+                rejected["stable_base"] += 1
+                continue
+
+            if (
+                config.exclude_leveraged_tokens
+                and _is_leveraged_base(base)
+            ):
+                rejected["leveraged_token"] += 1
+                continue
+
             eligible[str(symbol)] = market
 
-        tickers, warnings = self._fetch_tickers(
+        tickers, ticker_warnings = self._fetch_tickers(
             list(eligible)
         )
+        warnings = list(ticker_warnings)
 
         candidates: list[MarketCandidate] = []
         for symbol, market in eligible.items():
@@ -223,13 +337,13 @@ class DynamicMarketUniverse:
                 continue
 
             spread_bps = _spread_bps(ticker)
-            if (
-                config.max_spread_bps is not None
-                and spread_bps is not None
-                and spread_bps > config.max_spread_bps
-            ):
-                rejected["wide_spread"] += 1
-                continue
+            if config.max_spread_bps is not None:
+                if spread_bps is None:
+                    rejected["missing_spread"] += 1
+                    continue
+                if spread_bps > config.max_spread_bps:
+                    rejected["wide_spread"] += 1
+                    continue
 
             candidates.append(
                 MarketCandidate(
@@ -264,11 +378,18 @@ class DynamicMarketUniverse:
             )
         )
 
-        selected = tuple(candidates[: config.max_markets])
+        selected = tuple(
+            self._history_validated(
+                candidates,
+                config,
+                rejected,
+                warnings,
+            )
+        )
         return UniverseSelection(
             candidates=selected,
             total_markets=total_markets,
             eligible_markets=len(eligible),
-            warnings=warnings,
+            warnings=tuple(warnings),
             rejected=rejected,
         )
