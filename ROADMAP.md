@@ -92,7 +92,10 @@
 - [x] Approve/reject workflow (dry-run only)
 - [x] Broker adapter protocol + dry-run adapter
 - [x] Approval/decision/execution audit trail
-- [ ] Authenticated broker adapter
+- [x] Authenticated broker preparation boundary
+- [x] Environment-only credential provider
+- [x] Exchange precision / minimum-limit validation
+- [ ] Live order-capable authenticated broker adapter
 - [ ] Exchange order management
 
 ## Phase 10 — Automated Execution
