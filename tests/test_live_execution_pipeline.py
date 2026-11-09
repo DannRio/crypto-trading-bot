@@ -597,3 +597,200 @@ def test_live_adapter_refuses_unprotected_entry(
             approved_intent()
         )
     store.close()
+
+
+
+class TimeoutAfterAcceptExchange(FakeLiveExchange):
+    def __init__(self, config=None):
+        super().__init__(config)
+        self.raise_after_accept = True
+
+    def create_order(
+        self,
+        symbol,
+        order_type,
+        side,
+        amount,
+        price,
+        params,
+    ):
+        raw = super().create_order(
+            symbol,
+            order_type,
+            side,
+            amount,
+            price,
+            params,
+        )
+        if self.raise_after_accept:
+            self.raise_after_accept = False
+            raise TimeoutError(
+                "Timed out after exchange accepted order."
+            )
+        return raw
+
+
+def test_live_timeout_reconciles_original_order_without_duplicate(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv(
+        "TRADING_LIVE_EXECUTION",
+        "ENABLED",
+    )
+    store = OrderStore(tmp_path / "orders.db")
+    guard = LiveExecutionGuard(store)
+    guard.arm(
+        actor="Danny",
+        confirmation="ARM_LIVE",
+    )
+    exchange = TimeoutAfterAcceptExchange()
+    broker = ManagedLiveBrokerAdapter(
+        exchange_id="kucoin",
+        market_type="spot",
+        store=store,
+        guard=guard,
+        credential_provider=StaticCredentialProvider(),
+        exchange_factory=lambda config: exchange,
+        now_fn=lambda: pd.Timestamp(
+            "2026-11-09T12:05:00Z"
+        ),
+    )
+
+    with pytest.raises(TimeoutError):
+        broker.execute(
+            approved_intent()
+        )
+
+    local = store.get_by_intent(
+        "intent-live-1"
+    )
+    assert local is not None
+    assert local.status == ManagedOrderStatus.UNKNOWN
+    assert exchange.create_calls == 1
+
+    report = ReconciliationService(
+        store,
+        broker.manager,
+        broker.gateway,
+        guard,
+    ).reconcile_all()
+
+    assert report.updated == 1
+    reconciled = store.get_by_intent(
+        "intent-live-1"
+    )
+    assert reconciled.status == ManagedOrderStatus.SUBMITTED
+    assert reconciled.external_order_id == "live-1"
+
+    with pytest.raises(
+        ValueError,
+        match="APPROVED",
+    ):
+        broker.execute(
+            TradeIntent(
+                **{
+                    **approved_intent().__dict__,
+                    "status": IntentStatus.EXECUTED,
+                }
+            )
+        )
+    assert exchange.create_calls == 1
+    store.close()
+
+
+def test_execution_halt_persists_across_restart_and_requires_reset(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv(
+        "TRADING_LIVE_EXECUTION",
+        "ENABLED",
+    )
+    path = tmp_path / "orders.db"
+
+    first = OrderStore(path)
+    first_guard = LiveExecutionGuard(
+        first
+    )
+    first_guard.arm(
+        actor="Danny",
+        confirmation="ARM_LIVE",
+    )
+    first_guard.trip(
+        actor="Danny",
+        reason="test halt",
+    )
+    first.close()
+
+    restored = OrderStore(path)
+    guard = LiveExecutionGuard(restored)
+    state = guard.status()
+    assert state.halted is True
+    assert state.armed is False
+    assert state.halt_reason == "test halt"
+
+    with pytest.raises(
+        RuntimeError,
+        match="Reset the halt",
+    ):
+        guard.arm(
+            actor="Danny",
+            confirmation="ARM_LIVE",
+        )
+
+    guard.reset_halt(
+        actor="Danny",
+        confirmation="RESET_HALT",
+    )
+    reset = guard.status()
+    assert reset.halted is False
+    assert reset.armed is False
+    restored.close()
+
+
+class NoClientOrderIdExchange(FakeLiveExchange):
+    def feature_value(self, symbol, method, feature):
+        if feature == "clientOrderId":
+            return False
+        return super().feature_value(
+            symbol,
+            method,
+            feature,
+        )
+
+
+def test_live_adapter_refuses_market_without_client_order_id(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv(
+        "TRADING_LIVE_EXECUTION",
+        "ENABLED",
+    )
+    store = OrderStore(tmp_path / "orders.db")
+    guard = LiveExecutionGuard(store)
+    guard.arm(
+        actor="Danny",
+        confirmation="ARM_LIVE",
+    )
+    exchange = NoClientOrderIdExchange()
+
+    broker = ManagedLiveBrokerAdapter(
+        exchange_id="kucoin",
+        market_type="spot",
+        store=store,
+        guard=guard,
+        credential_provider=StaticCredentialProvider(),
+        exchange_factory=lambda config: exchange,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="clientOrderId",
+    ):
+        broker.execute(
+            approved_intent()
+        )
+    assert exchange.create_calls == 0
+    store.close()
