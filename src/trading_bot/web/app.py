@@ -23,6 +23,7 @@ from trading_bot.assisted import (
 )
 from trading_bot.backtesting import run_decision_backtest
 from trading_bot.execution import (
+    LiveExecutionGuard,
     ManagedDryRunBrokerAdapter,
     OrderStore,
 )
@@ -59,6 +60,12 @@ ORDER_DB_PATH = Path(
     os.getenv(
         "TRADING_ORDER_DB",
         "data/orders/orders.db",
+    )
+)
+LIVE_ORDER_DB_PATH = Path(
+    os.getenv(
+        "TRADING_LIVE_ORDER_DB",
+        "data/orders/live_orders.db",
     )
 )
 
@@ -602,6 +609,31 @@ def assisted_reject(
         store.close()
 
 
+
+
+@app.get("/api/execution/status")
+def execution_status():
+    store = OrderStore(LIVE_ORDER_DB_PATH)
+    try:
+        guard = LiveExecutionGuard(store)
+        state = guard.status()
+        return {
+            "mode": "LIVE_OPERATOR_CLI_ONLY",
+            "web_live_submission": False,
+            "database": str(LIVE_ORDER_DB_PATH),
+            "environment_enabled": (
+                guard.environment_enabled
+            ),
+            "context": _safe(
+                store.load_execution_context()
+            ),
+            "control": _safe(state),
+            "active_orders": _safe(
+                store.active_orders()
+            ),
+        }
+    finally:
+        store.close()
 
 
 @app.get("/api/orders/status")
