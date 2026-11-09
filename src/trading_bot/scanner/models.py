@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+import pandas as pd
+
 from trading_bot.analysis import MarketStructure
 from trading_bot.data import DataQualityReport
 from trading_bot.planning import TradeSetup
