@@ -12,6 +12,7 @@ A Python engine for scanning crypto markets, producing rule-qualified trade setu
 - Risk-defined trade plans with entry zone, stop, TP1, TP2, size, notional, and actual account risk.
 - Multi-symbol scanning and ranking.
 - Configurable higher-timeframe regime confirmation.
+- Dynamic liquid-market discovery and ranking.
 - Shared DecisionEngine used by both scanner and historical research.
 - Scanner-aligned backtester with fees, slippage, drawdown, win rate, profit factor, and R-multiples.
 - Paginated multi-year historical downloader and local dataset store.
@@ -216,3 +217,29 @@ Behavior:
 - The original rule score is preserved so the effect of the filter can be measured independently.
 
 The browser dashboard exposes the same higher-timeframe confirmation controls.
+
+
+## Dynamic market universe
+
+Instead of hard-coding symbols, the scanner can discover markets from the selected exchange and rank the liquid candidates before analysis.
+
+Example:
+
+~~~powershell
+python main.py --exchange kucoin --market-type spot --auto-universe --quote-currencies USDT --max-markets 20 --min-quote-volume 5000000 --timeframe 15m --confirm-timeframes 1h,4h
+~~~
+
+Auto-universe selection:
+
+- uses CCXT market metadata instead of parsing exchange-specific symbol strings
+- keeps the requested market type and quote currencies
+- excludes markets explicitly marked inactive
+- requires measurable 24h quote volume
+- ranks candidates by 24h quote volume
+- can optionally reject markets above a ticker bid/ask spread threshold
+- caps the final universe before OHLCV scanning
+- leaves manual `--symbols` mode available as an override
+
+Optional spread filtering is a coarse liquidity screen only. Ticker bid/ask fields are not a replacement for order-book data and should not be used as the live execution spread model.
+
+The web dashboard exposes the same manual/auto universe choice and filters.
