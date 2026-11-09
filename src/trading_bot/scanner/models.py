@@ -22,6 +22,7 @@ class ScanResult:
     confirmation_timeframes: tuple[str, ...] = ()
     confirmations: tuple[TimeframeConfirmation, ...] = ()
     multi_timeframe_aligned: bool | None = None
+    candidates: tuple[SetupAssessment, ...] = ()
 
     @property
     def score(self) -> int:
