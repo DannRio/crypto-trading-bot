@@ -14,7 +14,13 @@ import re
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 import pandas as pd
+from pydantic import BaseModel, Field
 
+from trading_bot.assisted import (
+    AssistedTradingService,
+    IntentStatus,
+    IntentStore,
+)
 from trading_bot.backtesting import run_decision_backtest
 from trading_bot.data import get_ohlcv, validate_ohlcv
 from trading_bot.paper import PaperJournal
@@ -39,6 +45,33 @@ PAPER_JOURNAL_PATH = Path(
         "data/paper/continuous_paper.db",
     )
 )
+ASSISTED_DB_PATH = Path(
+    os.getenv(
+        "TRADING_ASSISTED_DB",
+        "data/assisted/assisted.db",
+    )
+)
+
+
+class StageIntentRequest(BaseModel):
+    exchange: str = "kraken"
+    market_type: str = "spot"
+    symbol: str
+    timeframe: str = "1h"
+    confirm_timeframes: list[str] = Field(default_factory=list)
+    entry_timeframe: str | None = None
+    limit: int = 500
+    equity: float = 10_000
+    risk_percent: float = 1.0
+    min_score: int = 70
+    strategies: list[str] = Field(
+        default_factory=lambda: ["trend_continuation"]
+    )
+
+
+class IntentDecisionRequest(BaseModel):
+    actor: str
+    note: str = ""
 
 
 def _safe(value):
