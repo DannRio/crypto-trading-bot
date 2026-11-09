@@ -80,6 +80,25 @@ class LiveExecutionGuard:
             raise RuntimeError(
                 f"Cannot arm until {self.env_var}={self.env_value}."
             )
+        ambiguous = [
+            order
+            for order in self.store.active_orders()
+            if order.status
+            in {
+                ManagedOrderStatus.UNKNOWN,
+                ManagedOrderStatus.SUBMITTING,
+                ManagedOrderStatus.CANCEL_PENDING,
+            }
+        ]
+        if ambiguous:
+            raise RuntimeError(
+                "Cannot arm with unresolved managed orders: "
+                + ", ".join(
+                    f"{order.order_id}={order.status.value}"
+                    for order in ambiguous
+                )
+            )
+
         current = self.status()
         if current.halted:
             raise RuntimeError(
