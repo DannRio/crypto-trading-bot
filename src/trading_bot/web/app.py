@@ -22,6 +22,10 @@ from trading_bot.assisted import (
     IntentStore,
 )
 from trading_bot.backtesting import run_decision_backtest
+from trading_bot.execution import (
+    ManagedDryRunBrokerAdapter,
+    OrderStore,
+)
 from trading_bot.data import get_ohlcv, validate_ohlcv
 from trading_bot.paper import PaperJournal
 from trading_bot.scanner import (
@@ -49,6 +53,12 @@ ASSISTED_DB_PATH = Path(
     os.getenv(
         "TRADING_ASSISTED_DB",
         "data/assisted/assisted.db",
+    )
+)
+ORDER_DB_PATH = Path(
+    os.getenv(
+        "TRADING_ORDER_DB",
+        "data/orders/orders.db",
     )
 )
 
@@ -529,8 +539,15 @@ def assisted_approve(
         raise HTTPException(422, "Decision actor is required.")
 
     store = IntentStore(ASSISTED_DB_PATH)
+    order_store = OrderStore(ORDER_DB_PATH)
     try:
-        service = AssistedTradingService(store)
+        broker = ManagedDryRunBrokerAdapter(
+            order_store
+        )
+        service = AssistedTradingService(
+            store,
+            broker=broker,
+        )
         try:
             intent, receipt = service.approve(
                 intent_id,
@@ -544,12 +561,13 @@ def assisted_approve(
             raise HTTPException(409, str(exc)) from exc
 
         return {
-            "mode": "DRY_RUN",
+            "mode": "MANAGED_DRY_RUN",
             "live_execution": False,
             "intent": _safe(intent),
             "receipt": _safe(receipt),
         }
     finally:
+        order_store.close()
         store.close()
 
 
@@ -579,6 +597,25 @@ def assisted_reject(
             "mode": "DRY_RUN",
             "live_execution": False,
             "intent": _safe(intent),
+        }
+    finally:
+        store.close()
+
+
+
+
+@app.get("/api/orders/status")
+def order_status(
+    limit: int = Query(50, ge=1, le=200),
+):
+    store = OrderStore(ORDER_DB_PATH)
+    try:
+        orders = store.list_orders(limit=limit)
+        return {
+            "mode": "MANAGED_DRY_RUN",
+            "live_execution": False,
+            "database": str(ORDER_DB_PATH),
+            "orders": _safe(orders),
         }
     finally:
         store.close()
