@@ -353,7 +353,9 @@ The dashboard provides:
 - **Annual return bars**, computed from a *continuous* candle-close
   marked-to-market equity curve. Capital is not reset between years.
 - **Equity/drawdown charts**, downsampled to retain important extrema
-  and interactive on hover. Selecting a year zooms the chart.
+  and interactive on hover. Selecting a year zooms the chart. Trade
+  timestamps and chart labels default to Halifax local time (including
+  daylight-saving shifts), with a UTC toggle. Annual grouping stays UTC.
 - **Score and market-regime buckets**, showing trade counts, net P&L,
   win rate and average R.
 - **Trade explorer** with filters for year, direction, entry regime,
