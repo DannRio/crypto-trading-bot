@@ -411,6 +411,113 @@ def assisted_intents(
         store.close()
 
 
+
+
+@app.post("/api/assisted/stage")
+def assisted_stage(request: StageIntentRequest):
+    _validate_exchange(
+        request.exchange,
+        request.market_type,
+        request.timeframe,
+    )
+    symbol = _validate_symbol(request.symbol)
+
+    if not 250 <= request.limit <= 1000:
+        raise HTTPException(422, "limit must be between 250 and 1000.")
+    if not 0 < request.equity <= 100_000_000:
+        raise HTTPException(422, "equity must be positive.")
+    if not 0 < request.risk_percent <= 5:
+        raise HTTPException(
+            422,
+            "risk_percent must be greater than 0 and <= 5.",
+        )
+    if not 0 <= request.min_score <= 100:
+        raise HTTPException(
+            422,
+            "min_score must be between 0 and 100.",
+        )
+
+    confirmation_timeframes = tuple(
+        value.strip()
+        for value in request.confirm_timeframes
+        if value.strip()
+    )
+    unsupported = [
+        value
+        for value in confirmation_timeframes
+        if value not in TIMEFRAMES
+    ]
+    if unsupported:
+        raise HTTPException(
+            422,
+            "Unsupported confirmation timeframe: "
+            + ", ".join(unsupported),
+        )
+
+    entry_timeframe = (
+        request.entry_timeframe.strip()
+        if request.entry_timeframe
+        else None
+    )
+    if entry_timeframe and entry_timeframe not in TIMEFRAMES:
+        raise HTTPException(422, "Unsupported entry timeframe.")
+
+    try:
+        strategy_names = normalize_strategy_names(
+            tuple(request.strategies)
+        )
+        scanner = MarketScanner(
+            exchange_id=request.exchange,
+            market_type=request.market_type,
+            timeframe=request.timeframe,
+            confirmation_timeframes=confirmation_timeframes,
+            entry_timeframe=entry_timeframe,
+            candle_limit=request.limit,
+            account_equity=request.equity,
+            risk_percent=request.risk_percent / 100,
+            min_confirmed_score=request.min_score,
+            strategy_names=strategy_names,
+        )
+        result = scanner.scan_symbol(symbol)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        log.exception("Assisted staging scan failed")
+        raise HTTPException(
+            502,
+            "Could not evaluate the requested market.",
+        ) from exc
+
+    store = IntentStore(ASSISTED_DB_PATH)
+    try:
+        service = AssistedTradingService(store)
+        try:
+            intent = service.build_intent(result)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+        created = store.queue(intent)
+        if not created:
+            existing = store.get_by_fingerprint(
+                intent.fingerprint
+            )
+            if existing is None:
+                raise HTTPException(
+                    409,
+                    "Matching intent already exists.",
+                )
+            intent = existing
+
+        return {
+            "created": created,
+            "mode": "DRY_RUN",
+            "live_execution": False,
+            "intent": _safe(intent),
+        }
+    finally:
+        store.close()
+
+
 @app.get("/api/backtest")
 def backtest(
     exchange: str = Query("kraken"),
