@@ -33,6 +33,7 @@ class ExchangeOrderSnapshot:
     status: ManagedOrderStatus
     filled_amount: float
     average_price: float | None = None
+    symbol: str | None = None
     message: str = ""
 
 
