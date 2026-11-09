@@ -150,6 +150,7 @@ def paper_status(
         trades = journal.trades(limit=limit)
         checkpoints = journal.checkpoints()
         signals = journal.signal_events(limit=limit)
+        risk_state = journal.load_risk_state()
 
         pending = (
             active[active["status"] == "PENDING"]
@@ -187,6 +188,7 @@ def paper_status(
             "recent_signals": _safe(
                 signals.to_dict("records")
             ),
+            "risk_state": _safe(risk_state),
         }
     finally:
         journal.close()
