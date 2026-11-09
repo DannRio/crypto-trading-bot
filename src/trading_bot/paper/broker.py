@@ -76,7 +76,9 @@ def _entry_price_from_zone(
     if high < zone_low or low > zone_high:
         return None
 
-    open_price = float(candle["open"])
+    open_price = float(
+        candle.get("open", candle["close"])
+    )
     return min(max(open_price, zone_low), zone_high)
 
 
