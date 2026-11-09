@@ -47,7 +47,7 @@ def test_aligned_higher_timeframes_preserve_confirmed_setup():
     scanner = MarketScanner(
         timeframe="15m",
         confirmation_timeframes=("1h", "4h"),
-        min_confirmed_score=70,
+        min_confirmed_score=50,
         data_fetcher=lambda timeframe, **kwargs: datasets[
             timeframe
         ].copy(),
@@ -74,7 +74,7 @@ def test_opposite_higher_timeframe_invalidates_setup():
     scanner = MarketScanner(
         timeframe="15m",
         confirmation_timeframes=("4h",),
-        min_confirmed_score=70,
+        min_confirmed_score=50,
         data_fetcher=lambda timeframe, **kwargs: datasets[
             timeframe
         ].copy(),
