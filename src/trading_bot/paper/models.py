@@ -29,6 +29,7 @@ class PaperOrder:
     planned_risk: float
     score: int
     regime: str
+    strategy: str
     bars_remaining: int
     status: PaperOrderStatus = PaperOrderStatus.PENDING
     filled_at: pd.Timestamp | None = None
@@ -55,6 +56,7 @@ class PaperPosition:
     entry_fee: float
     score: int
     regime: str
+    strategy: str
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,7 @@ class PaperTrade:
     exit_reason: str
     score: int
     regime: str
+    strategy: str
 
 
 @dataclass(frozen=True)
