@@ -146,6 +146,7 @@ def paper_status(
     journal = PaperJournal(PAPER_JOURNAL_PATH)
     try:
         active = journal.active_orders()
+        all_trades = journal.all_trades()
         trades = journal.trades(limit=limit)
         checkpoints = journal.checkpoints()
         signals = journal.signal_events(limit=limit)
@@ -161,8 +162,8 @@ def paper_status(
             else active
         )
         realized_pnl = (
-            float(journal.all_trades()["net_pnl"].sum())
-            if not journal.all_trades().empty
+            float(all_trades["net_pnl"].sum())
+            if not all_trades.empty
             else 0.0
         )
 
