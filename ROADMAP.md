@@ -96,7 +96,12 @@
 - [x] Environment-only credential provider
 - [x] Exchange precision / minimum-limit validation
 - [ ] Live order-capable authenticated broker adapter
-- [ ] Exchange order management
+- [x] Persistent normalized order-state manager
+- [x] Idempotent client-order identity
+- [x] Ambiguous submission -> reconcile-before-retry
+- [x] Partial-fill and cancellation state handling
+- [ ] Connect assisted approvals to managed orders
+- [ ] Live exchange order management
 
 ## Phase 10 — Automated Execution
 - [ ] Live exchange adapter
