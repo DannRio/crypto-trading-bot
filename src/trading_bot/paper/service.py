@@ -29,12 +29,15 @@ class PaperServiceConfig:
     market_type: str = "spot"
     timeframe: str = "1h"
     confirmation_timeframes: tuple[str, ...] = ()
+    entry_timeframe: str | None = None
     symbols: tuple[str, ...] = ()
     auto_universe: bool = False
     quote_currencies: tuple[str, ...] = ("USDT",)
     max_markets: int = 20
     min_quote_volume: float = 1_000_000
     max_spread_bps: float | None = None
+    min_history_candles: int = 220
+    max_history_probes: int = 60
     candle_limit: int = 500
     starting_equity: float = 10_000
     risk_percent: float = 0.01
@@ -67,6 +70,14 @@ class PaperServiceConfig:
             raise ValueError("interval_seconds must be positive.")
         if self.candle_limit < 2:
             raise ValueError("candle_limit must be at least 2.")
+        if self.min_history_candles < 0:
+            raise ValueError(
+                "min_history_candles cannot be negative."
+            )
+        if self.max_history_probes <= 0:
+            raise ValueError(
+                "max_history_probes must be positive."
+            )
         if self.correlation_lookback < 2:
             raise ValueError(
                 "correlation_lookback must be at least 2."
@@ -228,6 +239,13 @@ class PaperTradingService:
                 max_markets=self.config.max_markets,
                 min_quote_volume=self.config.min_quote_volume,
                 max_spread_bps=self.config.max_spread_bps,
+                min_history_candles=(
+                    self.config.min_history_candles
+                ),
+                history_timeframe=self.config.timeframe,
+                max_history_probes=(
+                    self.config.max_history_probes
+                ),
             )
         )
         if not selection.symbols:
@@ -363,6 +381,7 @@ class PaperTradingService:
             confirmation_timeframes=(
                 self.config.confirmation_timeframes
             ),
+            entry_timeframe=self.config.entry_timeframe,
             candle_limit=self.config.candle_limit,
             account_equity=self.broker.account_equity(),
             risk_percent=self.config.risk_percent,
