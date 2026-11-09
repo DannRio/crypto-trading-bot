@@ -90,6 +90,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional maximum ticker bid/ask spread in basis points.",
     )
     parser.add_argument(
+        "--min-history-candles",
+        type=int,
+        default=220,
+        help=(
+            "Minimum primary-timeframe candles required for auto-universe "
+            "markets. Set 0 to disable the history preflight."
+        ),
+    )
+    parser.add_argument(
+        "--max-history-probes",
+        type=int,
+        default=60,
+        help="Maximum markets to probe when validating history.",
+    )
+    parser.add_argument(
         "--alert-sinks",
         default="",
         help=(
@@ -301,6 +316,9 @@ def main(argv: list[str] | None = None) -> int:
                     max_markets=args.max_markets,
                     min_quote_volume=args.min_quote_volume,
                     max_spread_bps=args.max_spread_bps,
+                    min_history_candles=args.min_history_candles,
+                    history_timeframe=args.timeframe,
+                    max_history_probes=args.max_history_probes,
                 )
             )
         except (ValueError, RuntimeError) as exc:
@@ -323,10 +341,15 @@ def main(argv: list[str] | None = None) -> int:
                 if candidate.spread_bps is not None
                 else "spread n/a"
             )
+            history = (
+                f" | history {candidate.history_candles} candles"
+                if candidate.history_candles is not None
+                else ""
+            )
             print(
                 f"  {candidate.symbol}: "
                 f"24h quote volume {candidate.quote_volume:,.0f} | "
-                f"{spread}"
+                f"{spread}{history}"
             )
         for warning in selection.warnings:
             print(f"Universe warning: {warning}")
