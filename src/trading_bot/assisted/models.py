@@ -72,3 +72,17 @@ class ExecutionReceipt:
     external_order_id: str | None
     message: str
     plan_hash: str
+
+
+
+@dataclass(frozen=True)
+class PreparedOrder:
+    intent_id: str
+    exchange_id: str
+    market_type: str
+    symbol: str
+    order_type: str
+    side: str
+    amount: float
+    price: float
+    client_order_id: str
