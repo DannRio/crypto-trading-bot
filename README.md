@@ -624,7 +624,7 @@ The ledger binds itself to one exchange + market type. A KuCoin spot ledger cann
 
 ### Current live scope
 
-Live submission is deliberately **spot LONG only** in v0.16. Contract preparation understands CCXT `contractSize` and converts the planner's base-asset risk size into contract quantity, but swap/futures submission remains disabled until leverage, margin mode, and position mode are explicitly controlled and verified. CCXT exposes those settings separately from order creation, so inheriting stale exchange settings is not acceptable. citeturn536088search0turn536088search5
+Live submission is deliberately **spot LONG only** in v0.16. Contract preparation understands CCXT `contractSize` and converts the planner's base-asset risk size into contract quantity, but swap/futures submission remains disabled until leverage, margin mode, and position mode are explicitly controlled and verified. CCXT exposes those settings separately from order creation, so inheriting stale exchange settings is not acceptable.
 
 The kill switch cancels locally managed open entry orders. It does **not** flatten an already filled position. Live entries therefore require exchange-supported attached stop-loss and take-profit protection before they can be submitted.
 
