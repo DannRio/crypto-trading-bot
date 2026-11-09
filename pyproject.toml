@@ -30,6 +30,7 @@ dev = [
 crypto-engine = "trading_bot.cli:main"
 crypto-research = "trading_bot.research.cli:main"
 crypto-paper = "trading_bot.paper.cli:main"
+crypto-execution = "trading_bot.execution.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
