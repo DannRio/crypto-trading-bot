@@ -147,6 +147,33 @@ class ReconciliationService:
                 now=now,
             )
 
+        if (
+            self.guard is not None
+            and (
+                missing > 0
+                or errors
+            )
+        ):
+            reasons = []
+            if missing:
+                reasons.append(
+                    f"{missing} active local order(s) were not found "
+                    "on the exchange"
+                )
+            if errors:
+                reasons.append(
+                    f"{len(errors)} reconciliation error(s) occurred"
+                )
+            self.guard.trip(
+                actor=actor,
+                reason=(
+                    "Execution reconciliation is unresolved: "
+                    + "; ".join(reasons)
+                    + "."
+                ),
+                now=now,
+            )
+
         if cancel_orphans:
             for snapshot in orphan_snapshots:
                 try:
