@@ -832,3 +832,50 @@ def test_live_adapter_refuses_market_without_client_order_id(
         )
     assert exchange.create_calls == 0
     store.close()
+
+
+
+def test_live_gateway_blocks_derivative_submission_even_when_armed(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv(
+        "TRADING_LIVE_EXECUTION",
+        "ENABLED",
+    )
+    store = OrderStore(tmp_path / "orders.db")
+    store.bind_execution_context(
+        exchange_id="kucoin",
+        market_type="swap",
+    )
+    guard = LiveExecutionGuard(store)
+    guard.arm(
+        actor="Danny",
+        confirmation="ARM_LIVE",
+    )
+    exchange = FakeLiveExchange()
+    gateway = CCXTOrderGateway(
+        exchange,
+        guard=guard,
+    )
+    prepared = PreparedOrder(
+        intent_id="swap-intent",
+        exchange_id="kucoin",
+        market_type="swap",
+        symbol="BTC/USDT:USDT",
+        order_type="limit",
+        side="buy",
+        amount=1.0,
+        price=100.0,
+        client_order_id=client_order_id_for_intent(
+            "swap-intent"
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="leverage",
+    ):
+        gateway.submit(prepared)
+    assert exchange.create_calls == 0
+    store.close()
