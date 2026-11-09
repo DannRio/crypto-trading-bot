@@ -49,3 +49,26 @@ class QueueReport:
     stale: int
     unsupported: int
     ignored: int
+
+
+
+@dataclass(frozen=True)
+class BrokerCapabilities:
+    broker_id: str
+    supported_market_types: tuple[str, ...]
+    supports_long: bool = True
+    supports_short: bool = True
+    live_execution: bool = False
+
+
+@dataclass(frozen=True)
+class ExecutionReceipt:
+    receipt_id: str
+    intent_id: str
+    broker_id: str
+    executed_at: pd.Timestamp
+    mode: str
+    accepted: bool
+    external_order_id: str | None
+    message: str
+    plan_hash: str
