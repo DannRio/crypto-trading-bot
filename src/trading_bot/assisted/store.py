@@ -7,6 +7,7 @@ from uuid import uuid4
 import pandas as pd
 
 from trading_bot.assisted.models import (
+    ExecutionReceipt,
     IntentDecision,
     IntentStatus,
     TradeIntent,
@@ -79,8 +80,25 @@ class IntentStore:
                     REFERENCES trade_intents(intent_id)
             );
 
+            CREATE TABLE IF NOT EXISTS execution_receipts (
+                receipt_id TEXT PRIMARY KEY,
+                intent_id TEXT NOT NULL,
+                broker_id TEXT NOT NULL,
+                executed_at TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                accepted INTEGER NOT NULL,
+                external_order_id TEXT,
+                message TEXT NOT NULL,
+                plan_hash TEXT NOT NULL,
+                FOREIGN KEY(intent_id)
+                    REFERENCES trade_intents(intent_id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_trade_intents_status
                 ON trade_intents(status, expires_at);
+
+            CREATE INDEX IF NOT EXISTS idx_execution_receipts_intent
+                ON execution_receipts(intent_id, executed_at);
             """
         )
         self.connection.commit()
@@ -396,6 +414,136 @@ class IntentStore:
                 actor=str(row["actor"]),
                 note=str(row["note"]),
                 decided_at=_timestamp(row["decided_at"]),
+            )
+            for row in rows
+        ]
+
+
+    def record_execution(
+        self,
+        receipt: ExecutionReceipt,
+    ) -> TradeIntent:
+        intent = self.get(receipt.intent_id)
+        if intent is None:
+            raise KeyError(
+                f"Unknown intent: {receipt.intent_id}"
+            )
+        if intent.status != IntentStatus.APPROVED:
+            raise ValueError(
+                f"Intent {intent.intent_id} is {intent.status.value}; "
+                "only APPROVED intents can be executed."
+            )
+        if receipt.plan_hash != intent.plan_hash:
+            raise ValueError(
+                "Execution receipt plan hash does not match "
+                "the approved immutable plan."
+            )
+
+        timestamp = _timestamp(receipt.executed_at)
+        if timestamp >= intent.expires_at:
+            self.expire_stale(timestamp)
+            raise ValueError(
+                f"Intent {intent.intent_id} expired before execution."
+            )
+
+        try:
+            self.connection.execute("BEGIN")
+            self.connection.execute(
+                """
+                INSERT INTO execution_receipts (
+                    receipt_id,
+                    intent_id,
+                    broker_id,
+                    executed_at,
+                    mode,
+                    accepted,
+                    external_order_id,
+                    message,
+                    plan_hash
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    receipt.receipt_id,
+                    receipt.intent_id,
+                    receipt.broker_id,
+                    timestamp.isoformat(),
+                    receipt.mode,
+                    1 if receipt.accepted else 0,
+                    receipt.external_order_id,
+                    receipt.message,
+                    receipt.plan_hash,
+                ),
+            )
+
+            if receipt.accepted:
+                self.connection.execute(
+                    """
+                    UPDATE trade_intents
+                    SET status = 'EXECUTED',
+                        updated_at = ?
+                    WHERE intent_id = ?
+                      AND status = 'APPROVED'
+                    """,
+                    (
+                        timestamp.isoformat(),
+                        receipt.intent_id,
+                    ),
+                )
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+
+        updated = self.get(receipt.intent_id)
+        assert updated is not None
+        return updated
+
+    def execution_receipts(
+        self,
+        intent_id: str | None = None,
+        limit: int = 100,
+    ) -> list[ExecutionReceipt]:
+        if limit <= 0:
+            raise ValueError("limit must be positive.")
+
+        if intent_id is None:
+            rows = self.connection.execute(
+                """
+                SELECT *
+                FROM execution_receipts
+                ORDER BY executed_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                """
+                SELECT *
+                FROM execution_receipts
+                WHERE intent_id = ?
+                ORDER BY executed_at DESC
+                LIMIT ?
+                """,
+                (intent_id, limit),
+            ).fetchall()
+
+        return [
+            ExecutionReceipt(
+                receipt_id=str(row["receipt_id"]),
+                intent_id=str(row["intent_id"]),
+                broker_id=str(row["broker_id"]),
+                executed_at=_timestamp(row["executed_at"]),
+                mode=str(row["mode"]),
+                accepted=bool(row["accepted"]),
+                external_order_id=(
+                    str(row["external_order_id"])
+                    if row["external_order_id"] is not None
+                    else None
+                ),
+                message=str(row["message"]),
+                plan_hash=str(row["plan_hash"]),
             )
             for row in rows
         ]
