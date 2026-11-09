@@ -298,9 +298,9 @@ def run_decision_backtest(
             setup.signal,
             position["entry_price"],
             executed_exit,
-            setup.position_size,
+            position["qty"],
         )
-        exit_fee = executed_exit * setup.position_size * fee_rate
+        exit_fee = executed_exit * position["qty"] * fee_rate
         equity += gross_pnl - exit_fee
         net_pnl = gross_pnl - position["entry_fee"] - exit_fee
         risk_amount = position["risk_amount"]
