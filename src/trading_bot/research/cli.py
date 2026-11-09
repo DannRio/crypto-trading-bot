@@ -173,6 +173,7 @@ def _backtest(args) -> int:
         "profit_factor",
         "average_r",
         "strategies",
+        "strategy_mix",
         "status",
     ]
     available = [
@@ -209,6 +210,7 @@ def _oos(args) -> int:
             validation_cutoff=args.validation_cutoff,
             **_backtest_kwargs(args),
         )
+        summary.insert(0, "strategies", args.strategies)
         summary.insert(0, "timeframe", spec.timeframe)
         summary.insert(0, "symbol", spec.symbol)
         summary.insert(0, "market_type", spec.market_type)
