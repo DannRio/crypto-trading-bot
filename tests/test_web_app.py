@@ -34,6 +34,7 @@ def test_reject_untrusted_market_inputs():
         "/api/scan?timeframe=1h&confirm_timeframes=15m",
         "/api/backtest?symbol=%2F%2F",
         "/api/backtest?limit=50",
+        "/api/scan?strategies=not_real",
     ):
         assert client.get(url).status_code == 422, url
 
@@ -52,6 +53,7 @@ def test_scanner_respects_market_parameters(monkeypatch):
                 signal=SimpleNamespace(value="LONG"),
                 score=83,
                 reason="Bull trend and volume confirmation",
+                strategy="trend_continuation",
             )
             return [
                 SimpleNamespace(
@@ -77,6 +79,7 @@ def test_scanner_respects_market_parameters(monkeypatch):
             "confirm_timeframes": "1h,4h",
             "equity": 25000,
             "risk_percent": 1.5,
+            "strategies": "trend_continuation,breakout_retest",
         },
     )
     assert response.status_code == 200, response.text
@@ -87,6 +90,10 @@ def test_scanner_respects_market_parameters(monkeypatch):
     assert captured["risk_percent"] == 0.015
     assert captured["market_type"] == "swap"
     assert captured["confirmation_timeframes"] == ("1h", "4h")
+    assert captured["strategy_names"] == (
+        "trend_continuation",
+        "breakout_retest",
+    )
     assert captured["symbols"] == ["BTC/USDT:USDT", "ETH/USDT:USDT"]
 
 
@@ -102,13 +109,19 @@ def test_backtest_runs_on_synthetic_candles(monkeypatch):
         "volume": np.full(n, 500.0),
     })
     monkeypatch.setattr(web, "get_ohlcv", lambda **kwargs: candles.copy())
-    response = client.get("/api/backtest?symbol=BTC/USD")
+    response = client.get(
+        "/api/backtest?symbol=BTC/USD"
+        "&strategies=trend_continuation"
+        "&min_score=65"
+    )
     assert response.status_code == 200, response.text
     data = response.json()
     assert data["data_rows"] == n - 1
     assert data["metrics"]["initial_equity"] == 10000
     assert data["assumptions"]["fee_rate_per_side"] == 0.001
     assert data["assumptions"]["slippage_bps_per_side"] == 5.0
+    assert data["assumptions"]["min_score"] == 65
+    assert data["strategies"] == ["trend_continuation"]
     assert isinstance(data["recent_trades"], list)
 
 
@@ -164,6 +177,7 @@ def test_web_scan_can_use_dynamic_universe(monkeypatch):
                 signal=SimpleNamespace(value="LONG"),
                 score=65,
                 reason="Test setup",
+                strategy="breakout_retest",
             )
             return [
                 SimpleNamespace(
@@ -192,6 +206,7 @@ def test_web_scan_can_use_dynamic_universe(monkeypatch):
             "min_quote_volume": 1_000_000,
             "timeframe": "15m",
             "confirm_timeframes": "4h",
+            "strategies": "breakout_retest",
         },
     )
 
@@ -202,3 +217,6 @@ def test_web_scan_can_use_dynamic_universe(monkeypatch):
     assert captured["symbols"] == ["BTC/USDT", "ETH/USDT"]
     assert captured["universe_config"].max_markets == 2
     assert captured["scanner_init"]["confirmation_timeframes"] == ("4h",)
+    assert captured["scanner_init"]["strategy_names"] == (
+        "breakout_retest",
+    )
