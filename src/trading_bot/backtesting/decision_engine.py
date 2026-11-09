@@ -360,7 +360,7 @@ def run_decision_backtest(
 
                     # If a new break-even stop and TP2 are both inside the same
                     # candle after TP1, use the conservative outcome.
-                    if stop_after_tp1 and hit_tp2:
+                    if stop_after_tp1:
                         close_position(
                             candle,
                             effective_stop,
