@@ -18,9 +18,10 @@ A Python engine for scanning crypto markets, producing rule-qualified trade setu
 - Scanner-aligned backtester with fees, slippage, drawdown, win rate, profit factor, and R-multiples.
 - Paginated multi-year historical downloader and local dataset store.
 - Batch research across multiple symbols and timeframes.
-- Local research dashboard with dry-run assisted approval; live execution remains disabled.
+- Local research dashboard with dry-run assisted approval plus read-only live-execution status.
+- Guarded operator-only live spot execution through the `crypto-execution` CLI; disabled by default.
 
-The engine deliberately does **not** place live orders yet. Execution should consume validated setups only after out-of-sample and paper-trading validation.
+Live order submission exists only behind the guarded operator CLI. It is disabled by default, is not connected to the scanner automatically, and currently permits spot LONG entries only when every execution gate passes.
 
 ## Setup
 
@@ -136,7 +137,7 @@ python -m pip install -e ".[web]"
 python -m uvicorn trading_bot.web.app:app --host 127.0.0.1 --port 8000
 ~~~
 
-Open http://127.0.0.1:8000. The dashboard does not place orders.
+Open http://127.0.0.1:8000. The dashboard can stage and dry-run assisted plans and display read-only live-execution status, but it cannot arm or submit live orders.
 
 ## Multi-year historical research
 
@@ -512,7 +513,7 @@ The authenticated adapter currently supports:
 - market-type and LONG/SHORT capability gates
 - deterministic client-order id derived from the assisted intent id
 
-The adapter's `execute()` method is intentionally hard-disabled. It does **not** call `create_order`. A prepared order must not become live until the order-management layer provides idempotent submission, persistent order state, partial-fill handling, reconciliation, and kill-switch integration.
+The low-level `AuthenticatedCCXTBrokerAdapter.execute()` method remains intentionally hard-disabled. Live submission is instead routed through `ManagedLiveBrokerAdapter`, which combines this preparation layer with persistent order management, CCXT reconciliation, the live execution guard, and the kill switch.
 
 This boundary follows CCXT's current credential, market-loading, precision, and limit model.
 
@@ -559,7 +560,7 @@ data/orders/orders.db
 
 and is ignored by Git.
 
-The current gateway is `InMemoryOrderGateway`, which never contacts an exchange. The next integration step is to route approved assisted intents through this manager, then add a CCXT order gateway with idempotent submission/reconciliation before enabling any live order call.
+Dry-run flows still use `InMemoryOrderGateway` / `ImmediateFillOrderGateway`. The guarded live path uses `CCXTOrderGateway` behind the same persistent order manager.
 
 
 ## Assisted managed orders
@@ -579,3 +580,126 @@ When an intent is approved in the dashboard:
 This makes the dry-run product exercise the same persistence/idempotency boundary that future exchange execution will use, instead of bypassing order management.
 
 The current product still does **not** contact an exchange for order placement. The immediate-fill gateway is a local simulation and the authenticated CCXT adapter's `execute()` method remains hard-disabled.
+
+
+## Guarded live execution v1
+
+Version 0.16 implements the requested execution sequence from gateway through guarded live submission.
+
+### What is complete
+
+1. **Real CCXT order gateway** — unified create/fetch/open-order/cancel handling with capability checks and fallback order lookups.
+2. **Exchange order normalization** — CCXT `open`, `closed`, `canceled`, filled quantity, average price and unknown states map into the persistent managed-order state machine.
+3. **clientOrderId / idempotency** — each intent gets a deterministic `tb-...` client order ID. Live submission fails closed if the market does not advertise client-order-ID support.
+4. **Submit / fetch / cancel** — submissions are persisted as `SUBMITTING` before the exchange call; unverifiable submission or cancellation becomes `UNKNOWN`.
+5. **Partial fills** — reconciliation persists filled amount, remaining amount, average fill price, partial-fill and terminal fill state.
+6. **Bot ↔ exchange reconciliation** — local active orders are reconciled against exchange state, while bot-tagged exchange orders missing from the local ledger are treated as dangerous orphans.
+7. **Kill switch** — the persistent halt is latched before cancellation attempts, survives restart, blocks new submissions, and requires an explicit reset.
+8. **Live order submission** — available only through the guarded operator CLI after all required gates pass.
+
+### Live safety gates
+
+A new live entry is accepted only when all of the following are true:
+
+- the assisted intent is already `APPROVED` and has not expired
+- `TRADING_LIVE_EXECUTION=ENABLED` is present on the execution host
+- the live ledger is bound to the intended exchange and market type
+- persistent live execution has been explicitly armed with `ARM_LIVE`
+- there are no unresolved `UNKNOWN`, `SUBMITTING`, or `CANCEL_PENDING` managed orders
+- an immediate exchange reconciliation preflight has no missing local orders, reconciliation errors, or bot-tagged orphan orders
+- the exchange advertises deterministic `clientOrderId` support for the market
+- the exchange advertises attached stop-loss and take-profit support
+- the immutable setup contains both `stop_loss` and `take_profit_2`
+- exchange precision and amount/price/notional limits pass
+- the market is currently **spot**
+- the operator supplies the exact `SUBMIT_LIVE` confirmation token
+
+Live state uses a separate default database:
+
+~~~text
+data/orders/live_orders.db
+~~~
+
+The ledger binds itself to one exchange + market type. A KuCoin spot ledger cannot later be silently reused as a Bybit swap ledger.
+
+### Current live scope
+
+Live submission is deliberately **spot LONG only** in v0.16. Contract preparation understands CCXT `contractSize` and converts the planner's base-asset risk size into contract quantity, but swap/futures submission remains disabled until leverage, margin mode, and position mode are explicitly controlled and verified. CCXT exposes those settings separately from order creation, so inheriting stale exchange settings is not acceptable. citeturn536088search0turn536088search5
+
+The kill switch cancels locally managed open entry orders. It does **not** flatten an already filled position. Live entries therefore require exchange-supported attached stop-loss and take-profit protection before they can be submitted.
+
+### Operator workflow
+
+Credentials remain environment-only. For KuCoin, for example:
+
+~~~powershell
+$env:TRADING_KUCOIN_API_KEY="..."
+$env:TRADING_KUCOIN_SECRET="..."
+$env:TRADING_KUCOIN_PASSWORD="..."
+~~~
+
+First verify private authenticated access:
+
+~~~powershell
+crypto-execution probe --exchange kucoin --market-type spot
+~~~
+
+Inspect execution state:
+
+~~~powershell
+crypto-execution status
+~~~
+
+Reconcile exchange state before arming:
+
+~~~powershell
+crypto-execution reconcile --exchange kucoin --market-type spot
+~~~
+
+Enable the host-level live gate and arm the bound ledger:
+
+~~~powershell
+$env:TRADING_LIVE_EXECUTION="ENABLED"
+
+crypto-execution arm --actor Danny --confirm ARM_LIVE --exchange kucoin --market-type spot
+~~~
+
+Stage a confirmed setup from the dashboard, but **do not click the dashboard Approve button** for a live trade; that button intentionally runs the managed dry-run path. Approve the staged intent for live use from the operator CLI:
+
+~~~powershell
+crypto-execution approve-intent --intent-id <INTENT_ID> --actor Danny
+~~~
+
+Then submit that exact approved intent:
+
+~~~powershell
+crypto-execution live-submit-intent --intent-id <INTENT_ID> --exchange kucoin --market-type spot --confirm SUBMIT_LIVE
+~~~
+
+The live-submit command performs another exchange reconciliation immediately before order creation. If that preflight is unresolved, it latches the halt and refuses the order.
+
+Reconcile afterward or whenever exchange state may have changed:
+
+~~~powershell
+crypto-execution reconcile --exchange kucoin --market-type spot
+~~~
+
+Emergency stop:
+
+~~~powershell
+crypto-execution trip --actor Danny --reason "manual emergency stop" --exchange kucoin --market-type spot
+~~~
+
+The local halt is persisted before exchange cancellation is attempted, so a credential or network failure cannot leave new submissions enabled.
+
+After investigating the cause, reset leaves the system **disarmed**:
+
+~~~powershell
+crypto-execution reset-halt --actor Danny --confirm RESET_HALT
+~~~
+
+Reconcile again and explicitly arm before any later live submission.
+
+### What this does not mean
+
+Version 0.16 is **not autonomous live trading**. The scanner does not automatically call the live adapter. The web dashboard has no live-submit controls. Continuous WebSocket execution, live account/position risk reconciliation, explicit derivatives leverage/margin/position-mode controls, monitoring/alerting, and VPS/Docker deployment remain separate work.
