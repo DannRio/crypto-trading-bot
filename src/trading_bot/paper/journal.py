@@ -4,6 +4,7 @@ import sqlite3
 import pandas as pd
 
 from trading_bot.paper.models import PaperOrder, PaperTrade
+from trading_bot.paper.risk import PortfolioRiskState
 
 
 class PaperJournal:
@@ -42,6 +43,21 @@ class PaperJournal:
                 closed_at TEXT,
                 exit_price REAL,
                 exit_reason TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS paper_risk_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                peak_equity REAL NOT NULL,
+                last_equity REAL NOT NULL,
+                evaluated_at TEXT NOT NULL,
+                day_key TEXT NOT NULL,
+                day_start_equity REAL NOT NULL,
+                week_key TEXT NOT NULL,
+                week_start_equity REAL NOT NULL,
+                halted INTEGER NOT NULL,
+                halt_reason TEXT NOT NULL,
+                halted_at TEXT,
+                updated_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS paper_service_metadata (
@@ -245,6 +261,104 @@ class PaperJournal:
 
 
 
+
+
+
+
+    def load_risk_state(self) -> PortfolioRiskState | None:
+        row = self.connection.execute(
+            """
+            SELECT
+                peak_equity,
+                last_equity,
+                evaluated_at,
+                day_key,
+                day_start_equity,
+                week_key,
+                week_start_equity,
+                halted,
+                halt_reason,
+                halted_at
+            FROM paper_risk_state
+            WHERE id = 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+
+        halted_at = (
+            pd.Timestamp(row[9])
+            if row[9] is not None
+            else None
+        )
+        return PortfolioRiskState(
+            peak_equity=float(row[0]),
+            last_equity=float(row[1]),
+            evaluated_at=pd.Timestamp(row[2]),
+            day_key=str(row[3]),
+            day_start_equity=float(row[4]),
+            week_key=str(row[5]),
+            week_start_equity=float(row[6]),
+            halted=bool(row[7]),
+            halt_reason=str(row[8]),
+            halted_at=halted_at,
+        )
+
+    def save_risk_state(
+        self,
+        state: PortfolioRiskState,
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO paper_risk_state (
+                id,
+                peak_equity,
+                last_equity,
+                evaluated_at,
+                day_key,
+                day_start_equity,
+                week_key,
+                week_start_equity,
+                halted,
+                halt_reason,
+                halted_at,
+                updated_at
+            )
+            VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                peak_equity = excluded.peak_equity,
+                last_equity = excluded.last_equity,
+                evaluated_at = excluded.evaluated_at,
+                day_key = excluded.day_key,
+                day_start_equity = excluded.day_start_equity,
+                week_key = excluded.week_key,
+                week_start_equity = excluded.week_start_equity,
+                halted = excluded.halted,
+                halt_reason = excluded.halt_reason,
+                halted_at = excluded.halted_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                state.peak_equity,
+                state.last_equity,
+                self._timestamp(state.evaluated_at),
+                state.day_key,
+                state.day_start_equity,
+                state.week_key,
+                state.week_start_equity,
+                int(state.halted),
+                state.halt_reason,
+                self._timestamp(state.halted_at),
+                pd.Timestamp.now(tz="UTC").isoformat(),
+            ),
+        )
+        self.connection.commit()
+
+    def clear_risk_state(self) -> None:
+        self.connection.execute(
+            "DELETE FROM paper_risk_state WHERE id = 1"
+        )
+        self.connection.commit()
 
 
     def get_metadata(self, key: str) -> str | None:
