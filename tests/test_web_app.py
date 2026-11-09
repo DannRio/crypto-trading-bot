@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from fastapi.testclient import TestClient
 
+from trading_bot.paper import PaperJournal
 from trading_bot.scanner import MarketCandidate, UniverseSelection
 from trading_bot.web import app as web
 
@@ -219,4 +220,51 @@ def test_web_scan_can_use_dynamic_universe(monkeypatch):
     assert captured["scanner_init"]["confirmation_timeframes"] == ("4h",)
     assert captured["scanner_init"]["strategy_names"] == (
         "breakout_retest",
+    )
+
+
+
+def test_paper_status_endpoint_reads_persistent_service_state(
+    monkeypatch,
+    tmp_path,
+):
+    path = tmp_path / "paper.db"
+    journal = PaperJournal(path)
+    checkpoint = pd.Timestamp(
+        "2026-01-01T12:00:00Z"
+    )
+    journal.set_checkpoint(
+        "BTC/USDT",
+        "1h",
+        checkpoint,
+    )
+    journal.record_signal(
+        "BTC/USDT",
+        "1h",
+        "trend_continuation",
+        "LONG",
+        checkpoint,
+        action="SUBMITTED",
+    )
+    journal.close()
+
+    monkeypatch.setattr(
+        web,
+        "PAPER_JOURNAL_PATH",
+        path,
+    )
+
+    response = client.get("/api/paper/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"]["pending_orders"] == 0
+    assert body["summary"]["open_positions"] == 0
+    assert body["summary"]["realized_net_pnl"] == 0.0
+    assert len(body["checkpoints"]) == 1
+    assert body["checkpoints"][0]["symbol"] == "BTC/USDT"
+    assert len(body["recent_signals"]) == 1
+    assert (
+        body["recent_signals"][0]["action"]
+        == "SUBMITTED"
     )
