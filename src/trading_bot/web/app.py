@@ -731,6 +731,7 @@ def backtest(
     strategies: str = Query("trend_continuation", max_length=200),
     confirm_timeframes: str = Query("", max_length=100),
     entry_timeframe: str = Query("", max_length=20),
+    execution_timeframe: str = Query("", max_length=20),
     fee_rate: float = Query(0.001, ge=0, le=0.05),
     slippage_bps: float = Query(5.0, ge=0, le=500),
 ):
@@ -739,6 +740,7 @@ def backtest(
     strategy_names = _parse_strategies(strategies)
     htf = _parse_timeframes(confirm_timeframes)
     ltf = entry_timeframe.strip() or None
+    execution_tf = execution_timeframe.strip() or None
     from trading_bot.scanner.multi_timeframe import (
         validate_confirmation_timeframes,
         validate_entry_timeframe,
@@ -746,9 +748,10 @@ def backtest(
     try:
         htf = validate_confirmation_timeframes(timeframe, htf)
         ltf = validate_entry_timeframe(timeframe, ltf)
+        execution_tf = validate_entry_timeframe(timeframe, execution_tf)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    if (htf or ltf) and data_source != "local":
+    if (htf or ltf or execution_tf) and data_source != "local":
         raise HTTPException(
             422,
             "Historical multi-timeframe confirmation requires saved local "
@@ -818,7 +821,7 @@ def backtest(
             closed = filtered.reset_index(drop=True)
             source_path = str(dataset_path)
 
-            for extra_timeframe in dict.fromkeys((*htf, *((ltf,) if ltf else ()))):
+            for extra_timeframe in dict.fromkeys((*htf, *((ltf,) if ltf else ()), *((execution_tf,) if execution_tf else ()))):
                 extra_store, extra_path, extra_checked = _history_store_for_dataset(
                     exchange, market_type, symbol, extra_timeframe
                 )
@@ -868,6 +871,7 @@ def backtest(
             confirmation_timeframes=htf,
             entry_timeframe=ltf,
             secondary_data=secondary_data,
+            execution_timeframe=execution_tf,
         )
     except HTTPException:
         raise
@@ -907,11 +911,12 @@ def backtest(
         "strategies": list(strategy_names),
         "confirmation_timeframes": list(htf),
         "entry_timeframe": ltf,
+        "execution_timeframe": execution_tf,
         "assumptions": {
             "fee_rate_per_side": fee_rate,
             "slippage_bps_per_side": slippage_bps,
             "min_score": min_score,
-            "single_timeframe_only": not bool(htf or ltf),
+            "single_timeframe_only": not bool(htf or ltf or execution_tf),
         },
         "metrics": _safe({
             "initial_equity": result.initial_equity,
@@ -927,10 +932,11 @@ def backtest(
             result.trades.tail(10).to_dict("records")
         ),
         "warning": (
-            "MTF confirmation uses as-of closed historical candles, but execution "
-            "still uses primary-timeframe OHLC; intrabar TP/SL sequencing remains "
-            "conservative and has not been upgraded in this phase."
-            if htf or ltf else
+            "Historical MTF confirmation is as-of closed candles. Intrabar "
+            "fills are resolved with lower timeframe OHLC when an execution "
+            "timeframe is selected; events inside each child candle remain "
+            "ambiguous and are resolved conservatively."
+            if htf or ltf or execution_tf else
             "Single-timeframe baseline; scanner MTF gates are not applied."
         ),
     }
