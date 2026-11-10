@@ -150,6 +150,7 @@ def run_decision_backtest(
             strategy_names=strategy_names,
             strategy_parameters=strategy_parameters,
             trade_plan_config=trade_plan_config,
+            allow_short=allow_short,
         ).evaluate(history)
         return historical_gates.apply(decision, prepared.iloc[index]["timestamp"])
 
