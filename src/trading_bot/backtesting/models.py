@@ -27,6 +27,9 @@ class CompletedTrade:
     exit_fees: float = 0.0
     gross_r: float = 0.0
     fees_r: float = 0.0
+    raw_gross_pnl: float = 0.0
+    slippage_cost: float = 0.0
+    slippage_r: float = 0.0
 
 
 @dataclass
