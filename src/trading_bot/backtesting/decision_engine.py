@@ -88,6 +88,7 @@ def run_decision_backtest(
     entry_timeframe: str | None = None,
     secondary_data: dict[str, pd.DataFrame] | None = None,
     execution_timeframe: str | None = None,
+    deduplicate_setups: bool = False,
 ) -> BacktestResult:
     """Backtest the same scored decision path used by MarketScanner.
 
@@ -137,6 +138,8 @@ def run_decision_backtest(
     trades: list[CompletedTrade] = []
     pending = None
     position = None
+    active_thesis = None
+    effective_dedupe = deduplicate_setups or "trend_continuation_v2" in strategy_names
     start_index = max(warmup_candles, 1)
 
     def evaluate_at(index: int):
@@ -483,8 +486,15 @@ def run_decision_backtest(
             ):
                 pending = None
 
+            # A thesis is rearmed only after it has genuinely stopped
+            # qualifying. Prevent endless re-entry into the same persistent
+            # EMA/RSI condition immediately after a stop.
+            if decision.assessment.status != SetupStatus.CONFIRMED:
+                active_thesis = None
+            thesis_key = (decision.assessment.strategy, decision.assessment.signal)
             if (
                 pending is None
+                and (not effective_dedupe or thesis_key != active_thesis)
                 and decision.assessment.status
                 == SetupStatus.CONFIRMED
                 and decision.setup is not None
@@ -493,6 +503,7 @@ def run_decision_backtest(
                     or decision.assessment.signal != Signal.SHORT
                 )
             ):
+                active_thesis = thesis_key
                 pending = {
                     "setup": decision.setup,
                     "assessment": decision.assessment,
