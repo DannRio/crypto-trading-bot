@@ -23,6 +23,7 @@ from trading_bot.assisted import (
 )
 from trading_bot.backtesting import run_decision_backtest
 from trading_bot.research.diagnostics import trade_diagnostics
+from trading_bot.research.exit_ablation import run_exit_ablation
 from trading_bot.execution import (
     LiveExecutionGuard,
     ManagedDryRunBrokerAdapter,
@@ -733,6 +734,7 @@ def backtest(
     confirm_timeframes: str = Query("", max_length=100),
     entry_timeframe: str = Query("", max_length=20),
     execution_timeframe: str = Query("", max_length=20),
+    compare_exits: bool = Query(False),
     fee_rate: float = Query(0.001, ge=0, le=0.05),
     slippage_bps: float = Query(5.0, ge=0, le=500),
 ):
@@ -888,6 +890,25 @@ def backtest(
             "Market data or backtesting failed.",
         )
 
+    exit_ablation = None
+    if compare_exits:
+        exit_ablation_frame, _ = run_exit_ablation(
+            closed,
+            initial_equity=equity,
+            risk_percent=risk_percent / 100,
+            min_confirmed_score=min_score,
+            fee_rate=fee_rate,
+            slippage_bps=slippage_bps,
+            allow_short=market_type != "spot",
+            strategy_names=strategy_names,
+            primary_timeframe=timeframe,
+            confirmation_timeframes=htf,
+            entry_timeframe=ltf,
+            execution_timeframe=execution_tf,
+            secondary_data=secondary_data,
+        )
+        exit_ablation = _safe(exit_ablation_frame.to_dict("records"))
+
     data_start = (
         closed["timestamp"].min()
         if not closed.empty
@@ -933,6 +954,7 @@ def backtest(
             result.trades.tail(10).to_dict("records")
         ),
         "diagnostics": _safe(trade_diagnostics(result.trades, equity)),
+        "exit_ablation": exit_ablation,
         "warning": (
             "Historical MTF confirmation is as-of closed candles. Intrabar "
             "fills are resolved with lower timeframe OHLC when an execution "
