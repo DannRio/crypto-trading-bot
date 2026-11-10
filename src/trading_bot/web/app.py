@@ -22,6 +22,7 @@ from trading_bot.assisted import (
     IntentStore,
 )
 from trading_bot.backtesting import run_decision_backtest
+from trading_bot.research.diagnostics import trade_diagnostics
 from trading_bot.execution import (
     LiveExecutionGuard,
     ManagedDryRunBrokerAdapter,
@@ -931,6 +932,7 @@ def backtest(
         "recent_trades": _safe(
             result.trades.tail(10).to_dict("records")
         ),
+        "diagnostics": _safe(trade_diagnostics(result.trades, equity)),
         "warning": (
             "Historical MTF confirmation is as-of closed candles. Intrabar "
             "fills are resolved with lower timeframe OHLC when an execution "
