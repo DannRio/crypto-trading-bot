@@ -22,6 +22,11 @@ class CompletedTrade:
     risk_amount: float = 0.0
     r_multiple: float = 0.0
     tp1_hit: bool = False
+    gross_pnl: float = 0.0
+    entry_fee: float = 0.0
+    exit_fees: float = 0.0
+    gross_r: float = 0.0
+    fees_r: float = 0.0
 
 
 @dataclass
