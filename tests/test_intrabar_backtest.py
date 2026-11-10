@@ -47,9 +47,9 @@ def children():
     data = []
     for i, t in enumerate(dates):
         if i == 12:
-            row = (100, 101, 99, 100)
+            row = (100, 104, 99, 104)
         elif i == 13:
-            row = (100, 105.5, 100, 105)
+            row = (104, 105.5, 103, 105)
         elif i >= 14:
             row = (105, 106, 104, 106)
         else:
@@ -80,6 +80,10 @@ def test_intrabar_no_retroactive_breakeven(monkeypatch):
 
 
 def test_incomplete_intrabar_history_fails_closed(monkeypatch):
+    class FakeEngine:
+        def __init__(self, **kwargs): pass
+        def evaluate(self, history): return decision()
+    monkeypatch.setattr(backtest_module, "DecisionEngine", FakeEngine)
     with pytest.raises(ValueError, match="Missing or misaligned"):
         run_decision_backtest(
             candles(), warmup_candles=1, execution_timeframe="15m",
