@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from dataclasses import replace
 
 import pandas as pd
 
@@ -95,14 +96,8 @@ def evaluate_strategies(
                 f"Invalid parameters for strategy {name}: {exc}"
             ) from exc
         if assessment.strategy != name:
-            assessment = SetupAssessment(
-                signal=assessment.signal,
-                status=assessment.status,
-                score=assessment.score,
-                reason=assessment.reason,
-                reasons=assessment.reasons,
-                strategy=name,
-            )
+            assessment = replace(assessment, strategy=name)
+
         assessments.append(assessment)
 
     return tuple(assessments)

@@ -9,6 +9,7 @@ import pandas as pd
 
 from trading_bot.analysis import add_indicators, analyze_market_structure
 from trading_bot.data import timeframe_to_milliseconds, validate_ohlcv
+from trading_bot.data.validation import latest_expected_close
 from trading_bot.scanner.multi_timeframe import (
     TimeframeConfirmation,
     apply_confirmation_gate,
@@ -63,12 +64,18 @@ class HistoricalTimeframeGates:
         if n < 220:
             return None, None
         closed = frame.iloc[:n]
+        if close_times.iloc[n - 1] != latest_expected_close(decision_close, timeframe):
+            return None, None
         quality = validate_ohlcv(closed.tail(500), timeframe=timeframe, min_rows=220)
         if not quality.valid or quality.missing_intervals:
             return None, quality
         return closed, quality
 
-    def apply(self, decision, signal_open_time):
+    def apply_assessment(self, assessment, signal_open_time, context_only=False):
+        from trading_bot.decision.models import DecisionResult
+        return self.apply(DecisionResult(assessment, None, None), signal_open_time, context_only=context_only).assessment
+
+    def apply(self, decision, signal_open_time, context_only=False):
         """Return a new decision with scanner-identical gates, no future candles."""
         if not self.confirmation_timeframes and not self.entry_timeframe:
             return decision
@@ -93,14 +100,14 @@ class HistoricalTimeframeGates:
             structure = analyze_market_structure(closed)
             confirmations.append(TimeframeConfirmation(
                 timeframe=timeframe, regime=structure.regime,
-                aligned=regime_alignment(decision.assessment.signal, structure.regime),
+                aligned=regime_alignment(decision.assessment.signal, structure.regime, decision.assessment.strategy),
                 data_quality=quality,
             ))
 
         assessment, _ = apply_confirmation_gate(
             decision.assessment, tuple(confirmations)
         )
-        if self.entry_timeframe and assessment.signal.value != "NO_TRADE":
+        if not context_only and self.entry_timeframe and assessment.signal.value != "NO_TRADE":
             closed, quality = self._closed_snapshot(self.entry_timeframe, close_time)
             if closed is None:
                 # Missing LTF bars must never be interpreted as confirmation.
@@ -119,6 +126,7 @@ class HistoricalTimeframeGates:
                     data=closed,
                     regime=structure.regime,
                     data_quality=quality,
+                    strategy=assessment.strategy,
                 )
             assessment = apply_entry_trigger_gate(assessment, trigger)
 

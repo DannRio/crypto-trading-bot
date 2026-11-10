@@ -7,6 +7,7 @@ import pandas as pd
 
 from trading_bot.core.enums import MarketRegime, Signal, SetupStatus
 from trading_bot.strategies.models import SetupAssessment
+from trading_bot.strategies.events import attach_event
 
 
 def evaluate_trend_continuation_v2(
@@ -16,7 +17,11 @@ def evaluate_trend_continuation_v2(
     breakout_atr: float = 0.15,
     pullback_atr: float = 0.75,
     min_volume_ratio: float = 1.10,
+    max_extension_atr: float = 3.0,
+    impulse_lookback: int = 8,
 ) -> SetupAssessment:
+    if min(breakout_atr, pullback_atr, min_volume_ratio, max_extension_atr) <= 0 or impulse_lookback < 3:
+        raise ValueError("Trend event parameters must be positive; impulse_lookback >= 3.")
     name = "trend_continuation_v2"
     required = {"open", "high", "low", "close", "ema_50", "ema_200", "rsi_14", "atr_14"}
     if len(df) < 3 or not required.issubset(df.columns):
@@ -67,7 +72,18 @@ def evaluate_trend_continuation_v2(
         if direction == 1 else
         32 <= rsi < 50 and rsi <= previous_rsi
     )
-    pullback_confirmed = pullback_touch and resumed and momentum
+    impulse = df.iloc[-(impulse_lookback + 2):-2]
+    # A prior directional impulse and a retracement are distinct from an EMA touch.
+    impulse_ok = len(impulse) >= 3 and (
+        float(impulse["high"].max()) - float(prev["low"]) >= atr
+        and float(impulse["close"].iloc[-1]) > float(impulse["ema_50"].iloc[-1])
+        if direction == 1 else
+        float(prev["high"]) - float(impulse["low"].min()) >= atr
+        and float(impulse["close"].iloc[-1]) < float(impulse["ema_50"].iloc[-1])
+    )
+    extension_ok = 0 < direction * (close - ema) <= max_extension_atr * atr
+    breakout_confirmed = breakout_confirmed and momentum and extension_ok
+    pullback_confirmed = pullback_touch and resumed and momentum and impulse_ok and extension_ok
     if not (breakout_confirmed or pullback_confirmed):
         reason = "Waiting for new volume-confirmed breakout or EMA pullback resumption."
         return SetupAssessment(
@@ -91,7 +107,19 @@ def evaluate_trend_continuation_v2(
     status = (SetupStatus.CONFIRMED if score >= min_confirmed_score
               else SetupStatus.FORMING if score >= min_forming_score
               else SetupStatus.NO_TRADE)
-    return SetupAssessment(
+    assessment = SetupAssessment(
         signal if status != SetupStatus.NO_TRADE else Signal.NO_TRADE,
         status, score, "; ".join(reasons), tuple(reasons), name
     )
+    if status == SetupStatus.NO_TRADE:
+        return assessment
+    subtype = "trend_breakout" if breakout_confirmed else "trend_pullback"
+    anchor = level if breakout_confirmed else previous_ema
+    structural_extreme = (
+        min(float(prev["low"]), float(latest["low"])) if direction == 1 else
+        max(float(prev["high"]), float(latest["high"]))
+    )
+    invalidation = structural_extreme - direction * 0.25 * atr
+    return attach_event(assessment, df, setup_type=subtype, anchor=anchor,
+                        invalidation=invalidation,
+                        cancel=level if breakout_confirmed else invalidation)

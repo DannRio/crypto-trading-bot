@@ -5,7 +5,7 @@ import pandas as pd
 def trade_diagnostics(trades: pd.DataFrame, initial_equity: float) -> dict:
     if trades.empty:
         return {
-            "by_strategy": [], "by_regime": [], "by_score_bucket": [],
+            "by_setup_type": [], "by_direction": [], "by_strategy": [], "by_regime": [], "by_score_bucket": [],
             "by_exit_reason": [], "by_year": [], "equity_curve": [],
             "gross_total": 0.0, "fees_total": 0.0, "slippage_total": 0.0,
             "gross_average_r": 0.0, "fees_average_r": 0.0,
@@ -38,6 +38,8 @@ def trade_diagnostics(trades: pd.DataFrame, initial_equity: float) -> dict:
     fees = float(df[["entry_fee", "exit_fees"]].sum().sum()) if {"entry_fee","exit_fees"}.issubset(df) else None
     return {
         "by_strategy": aggregate("strategy"),
+        "by_setup_type": aggregate("setup_type") if "setup_type" in df else [],
+        "by_direction": aggregate("signal"),
         "by_regime": aggregate("regime"),
         "by_score_bucket": aggregate("score_bucket"),
         "by_exit_reason": aggregate("exit_reason"),

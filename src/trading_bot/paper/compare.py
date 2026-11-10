@@ -34,7 +34,7 @@ def compare_paper_to_backtest(
     strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES,
 ) -> PaperBacktestComparison:
     backtest = run_decision_backtest(
-        data=data,
+        data=data, primary_timeframe=timeframe,
         initial_equity=initial_equity,
         risk_percent=risk_percent,
         min_confirmed_score=min_confirmed_score,

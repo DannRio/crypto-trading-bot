@@ -991,6 +991,8 @@ def backtest(
             result.trades.tail(10).to_dict("records")
         ),
         "diagnostics": _safe(trade_diagnostics(result.trades, equity)),
+        "execution_diagnostics": _safe(result.execution_diagnostics),
+        "mark_to_market_equity": _safe(result.equity_curve),
         "exit_ablation": exit_ablation,
         "chronological_validation": oos_summary,
         "warning": (

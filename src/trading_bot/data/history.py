@@ -145,7 +145,6 @@ class HistoricalDataStore:
         return (
             df[OHLCV_COLUMNS]
             .sort_values("timestamp")
-            .drop_duplicates(subset=["timestamp"], keep="last")
             .reset_index(drop=True)
         )
 

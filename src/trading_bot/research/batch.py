@@ -47,18 +47,18 @@ def run_batch_research(
             timeframe=spec.timeframe,
             min_rows=220,
         )
-        if not quality.valid:
+        if not quality.valid or quality.missing_intervals:
             row.update(
                 {
                     "status": "INVALID_DATA",
-                    "error": "; ".join(quality.issues),
+                    "error": "; ".join(quality.issues + quality.warnings),
                 }
             )
             summary_rows.append(row)
             continue
 
         result = run_decision_backtest(
-            data=data,
+            data=data, primary_timeframe=spec.timeframe,
             initial_equity=initial_equity,
             risk_percent=risk_percent,
             min_confirmed_score=min_confirmed_score,

@@ -747,3 +747,9 @@ The chronological 60/20/20 validation panel is *descriptive*. It is not
 a substitute for untouched out-of-sample assets, walk-forward experiments,
 multiple regimes, and forward paper trading. Live trading must remain
 disabled until the research results establish positive net expectancy.
+
+
+## Strategy correctness research v3
+
+See [the audit changes, regression coverage and reproducible validation command](docs/STRATEGY_CORRECTNESS_V3.md).
+This is a research candidate, not a validated profitable edge. Live execution remains disabled.

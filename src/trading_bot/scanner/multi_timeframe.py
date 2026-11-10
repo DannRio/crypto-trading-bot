@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pandas as pd
 
@@ -80,7 +80,14 @@ def validate_entry_timeframe(
 def regime_alignment(
     signal: Signal,
     regime: MarketRegime,
+    strategy: str = "trend_continuation",
 ) -> bool | None:
+    if strategy == "range_mean_reversion" and signal != Signal.NO_TRADE:
+        if regime == MarketRegime.RANGE:
+            return True
+        if regime in (MarketRegime.BULL_TREND, MarketRegime.BEAR_TREND):
+            return False
+        return None
     if signal == Signal.LONG:
         if regime == MarketRegime.BULL_TREND:
             return True
@@ -104,6 +111,7 @@ def evaluate_entry_trigger(
     data: pd.DataFrame,
     regime: MarketRegime,
     data_quality: DataQualityReport | None,
+    strategy: str = "trend_continuation",
 ) -> EntryTrigger:
     required = {"close", "ema_50", "rsi_14"}
     missing = required.difference(data.columns)
@@ -136,6 +144,23 @@ def evaluate_entry_trigger(
     close = float(latest["close"])
     ema_50 = float(latest["ema_50"])
     rsi = float(latest["rsi_14"])
+
+    if strategy == "range_mean_reversion":
+        # A range reversal needs a fresh directional turn, not trend agreement.
+        if len(data) < 2 or not {"open", "high", "low"}.issubset(data.columns):
+            confirmed = False
+        else:
+            previous = data.iloc[-2]
+            confirmed = bool(
+                close > float(latest["open"]) and close > float(previous["close"])
+                and rsi > float(previous["rsi_14"]) and regime != MarketRegime.BEAR_TREND
+                if signal == Signal.LONG else
+                close < float(latest["open"]) and close < float(previous["close"])
+                and rsi < float(previous["rsi_14"]) and regime != MarketRegime.BULL_TREND
+            )
+        return EntryTrigger(timeframe, confirmed, regime, rsi, close, ema_50,
+                            data_quality, "Range reversal trigger confirmed." if confirmed
+                            else "Waiting for a fresh range reversal trigger.")
 
     if signal == Signal.LONG:
         if regime == MarketRegime.BEAR_TREND:
@@ -219,7 +244,8 @@ def apply_confirmation_gate(
             + f"; Higher-timeframe conflict: {labels}."
         )
         return (
-            SetupAssessment(
+            replace(
+                assessment,
                 signal=Signal.NO_TRADE,
                 status=SetupStatus.NO_TRADE,
                 score=assessment.score,
@@ -250,7 +276,8 @@ def apply_confirmation_gate(
             else assessment.status
         )
         return (
-            SetupAssessment(
+            replace(
+                assessment,
                 signal=assessment.signal,
                 status=status,
                 score=assessment.score,
@@ -272,7 +299,8 @@ def apply_confirmation_gate(
         + f"; Higher-timeframe alignment confirmed: {labels}."
     )
     return (
-        SetupAssessment(
+        replace(
+            assessment,
             signal=assessment.signal,
             status=assessment.status,
             score=assessment.score,
@@ -297,7 +325,8 @@ def apply_entry_trigger_gate(
         return assessment
 
     if trigger.confirmed is True:
-        return SetupAssessment(
+        return replace(
+            assessment,
             signal=assessment.signal,
             status=assessment.status,
             score=assessment.score,
@@ -311,7 +340,8 @@ def apply_entry_trigger_gate(
         if assessment.status == SetupStatus.CONFIRMED
         else assessment.status
     )
-    return SetupAssessment(
+    return replace(
+        assessment,
         signal=assessment.signal,
         status=status,
         score=assessment.score,
