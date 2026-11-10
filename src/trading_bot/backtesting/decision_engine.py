@@ -83,6 +83,7 @@ def run_decision_backtest(
     strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES,
     strategy_parameters: dict[str, dict] | None = None,
     trade_plan_config: TradePlanConfig | None = None,
+    strategy_plan_configs: dict[str, TradePlanConfig] | None = None,
     primary_timeframe: str = "1h",
     confirmation_timeframes: tuple[str, ...] = (),
     entry_timeframe: str | None = None,
@@ -153,6 +154,7 @@ def run_decision_backtest(
             strategy_names=strategy_names,
             strategy_parameters=strategy_parameters,
             trade_plan_config=trade_plan_config,
+            strategy_plan_configs=strategy_plan_configs,
             allow_short=allow_short,
         ).evaluate(history)
         return historical_gates.apply(decision, prepared.iloc[index]["timestamp"])
