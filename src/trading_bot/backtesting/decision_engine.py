@@ -231,6 +231,11 @@ def run_decision_backtest(
                 risk_amount=risk_amount,
                 r_multiple=r_multiple,
                 tp1_hit=position["tp1_hit"],
+                gross_pnl=total_gross,
+                entry_fee=position["entry_fee"],
+                exit_fees=total_exit_fees,
+                gross_r=(total_gross / risk_amount if risk_amount > 0 else 0.0),
+                fees_r=((position["entry_fee"] + total_exit_fees) / risk_amount if risk_amount > 0 else 0.0),
             )
         )
         position = None
