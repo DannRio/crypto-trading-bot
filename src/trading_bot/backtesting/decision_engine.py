@@ -9,6 +9,7 @@ from trading_bot.backtesting.metrics import (
 )
 from trading_bot.backtesting.models import BacktestResult, CompletedTrade
 from trading_bot.backtesting.timeframe_gates import HistoricalTimeframeGates
+from trading_bot.data import timeframe_to_milliseconds, validate_ohlcv
 from trading_bot.core.enums import Signal, SetupStatus
 from trading_bot.decision import DecisionEngine
 from trading_bot.planning import TradePlanConfig
@@ -86,6 +87,7 @@ def run_decision_backtest(
     confirmation_timeframes: tuple[str, ...] = (),
     entry_timeframe: str | None = None,
     secondary_data: dict[str, pd.DataFrame] | None = None,
+    execution_timeframe: str | None = None,
 ) -> BacktestResult:
     """Backtest the same scored decision path used by MarketScanner.
 
@@ -109,6 +111,25 @@ def run_decision_backtest(
         entry_timeframe=entry_timeframe,
     )
     prepared = add_indicators(data.copy())
+    execution = None
+    execution_times = None
+    primary_delta = pd.to_timedelta(
+        timeframe_to_milliseconds(primary_timeframe), unit="ms"
+    )
+    if execution_timeframe:
+        if timeframe_to_milliseconds(execution_timeframe) >= timeframe_to_milliseconds(primary_timeframe):
+            raise ValueError("Execution timeframe must be lower than primary timeframe.")
+        if timeframe_to_milliseconds(primary_timeframe) % timeframe_to_milliseconds(execution_timeframe):
+            raise ValueError("Execution candles must divide the primary timeframe exactly.")
+        if not secondary_data or execution_timeframe not in secondary_data:
+            raise ValueError("Missing execution timeframe historical data.")
+        execution = secondary_data[execution_timeframe].copy()
+        execution["timestamp"] = pd.to_datetime(execution["timestamp"], utc=True)
+        execution = execution.sort_values("timestamp").reset_index(drop=True)
+        check = validate_ohlcv(execution, timeframe=execution_timeframe, min_rows=1)
+        if not check.valid:
+            raise ValueError("Invalid execution timeframe candles: " + "; ".join(check.issues))
+        execution_times = execution["timestamp"]
     equity = initial_equity
     peak_equity = equity
     max_drawdown = 0.0
@@ -258,136 +279,170 @@ def run_decision_backtest(
         if setup.move_stop_to_break_even_after_tp1:
             position["effective_stop"] = position["entry_price"]
 
-    for i in range(start_index, len(prepared)):
-        candle = prepared.iloc[i]
+    def process_execution_bar(bar):
+            if position is None and pending is not None:
+                raw_entry = _entry_price_from_zone(
+                    bar,
+                    pending["setup"],
+                )
 
-        # A pending setup may fill intrabar using information available from
-        # prior completed candles only.
-        if position is None and pending is not None:
-            raw_entry = _entry_price_from_zone(
-                candle,
-                pending["setup"],
-            )
-
-            if raw_entry is not None:
-                setup = pending["setup"]
-                executed_entry = _entry_with_slippage(
-                    raw_entry,
-                    setup.signal,
-                    slippage_bps,
-                )
-                entry_fee = (
-                    executed_entry
-                    * setup.position_size
-                    * fee_rate
-                )
-                initial_risk_amount = (
-                    abs(executed_entry - setup.stop_loss)
-                    * setup.position_size
-                )
-                equity -= entry_fee
-                position = {
-                    "setup": setup,
-                    "entry_price": executed_entry,
-                    "initial_size": setup.position_size,
-                    "remaining_size": setup.position_size,
-                    "initial_risk_amount": initial_risk_amount,
-                    "signal_time": pending["signal_time"],
-                    "entry_time": candle["timestamp"],
-                    "entry_fee": entry_fee,
-                    "score": pending["assessment"].score,
-                    "strategy": pending["assessment"].strategy,
-                    "regime": pending["structure"].regime.value,
-                    "tp1_hit": False,
-                    "effective_stop": setup.stop_loss,
-                    "realized_gross_pnl": 0.0,
-                    "realized_exit_fees": 0.0,
-                    "realized_exit_value": 0.0,
-                }
-                pending = None
-            else:
-                pending["bars_left"] -= 1
-                if pending["bars_left"] <= 0:
+                if raw_entry is not None:
+                    setup = pending["setup"]
+                    executed_entry = _entry_with_slippage(
+                        raw_entry,
+                        setup.signal,
+                        slippage_bps,
+                    )
+                    entry_fee = (
+                        executed_entry
+                        * setup.position_size
+                        * fee_rate
+                    )
+                    initial_risk_amount = (
+                        abs(executed_entry - setup.stop_loss)
+                        * setup.position_size
+                    )
+                    equity -= entry_fee
+                    position = {
+                        "setup": setup,
+                        "entry_price": executed_entry,
+                        "initial_size": setup.position_size,
+                        "remaining_size": setup.position_size,
+                        "initial_risk_amount": initial_risk_amount,
+                        "signal_time": pending["signal_time"],
+                        "entry_time": bar["timestamp"],
+                        "entry_fee": entry_fee,
+                        "score": pending["assessment"].score,
+                        "strategy": pending["assessment"].strategy,
+                        "regime": pending["structure"].regime.value,
+                        "tp1_hit": False,
+                        "effective_stop": setup.stop_loss,
+                        "realized_gross_pnl": 0.0,
+                        "realized_exit_fees": 0.0,
+                        "realized_exit_value": 0.0,
+                    }
                     pending = None
 
-        # Manage the open position. An active stop always wins when both stop
-        # and target are reachable inside the same OHLC candle.
-        if position is not None:
-            setup = position["setup"]
-            effective_stop = position["effective_stop"]
+            # Manage the open position. An active stop always wins when both stop
+            # and target are reachable inside the same OHLC bar.
+            if position is not None:
+                setup = position["setup"]
+                effective_stop = position["effective_stop"]
 
-            if setup.signal == Signal.LONG:
-                hit_stop = (
-                    float(candle["low"]) <= effective_stop
-                )
-                hit_tp1 = (
-                    not position["tp1_hit"]
-                    and setup.take_profit_1_fraction > 0
-                    and float(candle["high"]) >= setup.take_profit_1
-                )
-                hit_tp2 = (
-                    float(candle["high"]) >= setup.take_profit_2
-                )
-            else:
-                hit_stop = (
-                    float(candle["high"]) >= effective_stop
-                )
-                hit_tp1 = (
-                    not position["tp1_hit"]
-                    and setup.take_profit_1_fraction > 0
-                    and float(candle["low"]) <= setup.take_profit_1
-                )
-                hit_tp2 = (
-                    float(candle["low"]) <= setup.take_profit_2
-                )
+                if setup.signal == Signal.LONG:
+                    hit_stop = (
+                        float(bar["low"]) <= effective_stop
+                    )
+                    hit_tp1 = (
+                        not position["tp1_hit"]
+                        and setup.take_profit_1_fraction > 0
+                        and float(bar["high"]) >= setup.take_profit_1
+                    )
+                    hit_tp2 = (
+                        float(bar["high"]) >= setup.take_profit_2
+                    )
+                else:
+                    hit_stop = (
+                        float(bar["high"]) >= effective_stop
+                    )
+                    hit_tp1 = (
+                        not position["tp1_hit"]
+                        and setup.take_profit_1_fraction > 0
+                        and float(bar["low"]) <= setup.take_profit_1
+                    )
+                    hit_tp2 = (
+                        float(bar["low"]) <= setup.take_profit_2
+                    )
 
-            if hit_stop:
-                close_position(
-                    candle,
-                    effective_stop,
-                    (
-                        "STOP_LOSS_AFTER_TP1"
-                        if position["tp1_hit"]
-                        else "STOP_LOSS"
-                    ),
+                if hit_stop:
+                    close_position(
+                        bar,
+                        (
+                            min(effective_stop, float(bar["open"]))
+                            if setup.signal == Signal.LONG
+                            else max(effective_stop, float(bar["open"]))
+                        ),
+                        (
+                            "STOP_LOSS_AFTER_TP1"
+                            if position["tp1_hit"]
+                            else "STOP_LOSS"
+                        ),
+                    )
+                else:
+                    if hit_tp1:
+                        take_tp1()
+
+                    if position is not None:
+                        effective_stop = position["effective_stop"]
+                        if setup.signal == Signal.LONG:
+                            stop_after_tp1 = (
+                                position["tp1_hit"]
+                                and float(bar["low"])
+                                <= effective_stop
+                            )
+                        else:
+                            stop_after_tp1 = (
+                                position["tp1_hit"]
+                                and float(bar["high"])
+                                >= effective_stop
+                            )
+
+                        # If a new break-even stop and TP2 are both inside the same
+                        # bar after TP1, use the conservative outcome.
+                        if stop_after_tp1:
+                            close_position(
+                                bar,
+                                effective_stop,
+                                "STOP_LOSS_AFTER_TP1",
+                            )
+                        elif hit_tp2:
+                            close_position(
+                                bar,
+                                setup.take_profit_2,
+                                (
+                                    "TAKE_PROFIT_2_AFTER_TP1"
+                                    if position["tp1_hit"]
+                                    else "TAKE_PROFIT_2"
+                                ),
+                            )
+
+
+    for i in range(start_index, len(prepared)):
+        candle = prepared.iloc[i]
+        if execution is None:
+            execution_bars = [candle]
+        else:
+            start = pd.Timestamp(candle["timestamp"])
+            end = start + primary_delta
+            lo = int(execution_times.searchsorted(start, side="left"))
+            hi = int(execution_times.searchsorted(end, side="left"))
+            execution_bars = list(
+                execution.iloc[lo:hi].to_dict("records")
+            )
+            expected = timeframe_to_milliseconds(primary_timeframe) // timeframe_to_milliseconds(execution_timeframe)
+            interval = pd.to_timedelta(
+                timeframe_to_milliseconds(execution_timeframe), unit="ms"
+            )
+            if (
+                len(execution_bars) != expected
+                or any(
+                    pd.Timestamp(bar["timestamp"]) != start + offset * interval
+                    for offset, bar in enumerate(execution_bars)
                 )
-            else:
-                if hit_tp1:
-                    take_tp1()
+            ):
+                raise ValueError(
+                    f"Missing or misaligned {execution_timeframe} execution candles "
+                    f"for primary bar {start}."
+                )
+        pending_at_open = pending is not None
+        for bar in execution_bars:
+            process_execution_bar(bar)
 
-                if position is not None:
-                    effective_stop = position["effective_stop"]
-                    if setup.signal == Signal.LONG:
-                        stop_after_tp1 = (
-                            position["tp1_hit"]
-                            and float(candle["low"])
-                            <= effective_stop
-                        )
-                    else:
-                        stop_after_tp1 = (
-                            position["tp1_hit"]
-                            and float(candle["high"])
-                            >= effective_stop
-                        )
-
-                    # If a new break-even stop and TP2 are both inside the same
-                    # candle after TP1, use the conservative outcome.
-                    if stop_after_tp1:
-                        close_position(
-                            candle,
-                            effective_stop,
-                            "STOP_LOSS_AFTER_TP1",
-                        )
-                    elif hit_tp2:
-                        close_position(
-                            candle,
-                            setup.take_profit_2,
-                            (
-                                "TAKE_PROFIT_2_AFTER_TP1"
-                                if position["tp1_hit"]
-                                else "TAKE_PROFIT_2"
-                            ),
-                        )
+        # Pending setups expire after full primary candles, not individual child candles.
+        if pending_at_open and pending is not None:
+            pending["bars_left"] -= 1
+            if pending["bars_left"] <= 0:
+                pending = None
 
         # Mark-to-market only the still-open quantity.
         mark_equity = equity
