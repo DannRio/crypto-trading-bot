@@ -7,7 +7,7 @@ def trade_diagnostics(trades: pd.DataFrame, initial_equity: float) -> dict:
         return {
             "by_strategy": [], "by_regime": [], "by_score_bucket": [],
             "by_exit_reason": [], "by_year": [], "equity_curve": [],
-            "gross_total": 0.0, "fees_total": 0.0,
+            "gross_total": 0.0, "fees_total": 0.0, "slippage_total": 0.0,
             "gross_average_r": 0.0, "fees_average_r": 0.0,
         }
     df = trades.copy().sort_values("exit_time").reset_index(drop=True)
@@ -33,7 +33,8 @@ def trade_diagnostics(trades: pd.DataFrame, initial_equity: float) -> dict:
                 "profit_factor": float(wins / losses) if losses else (None if wins else 0.0),
             })
         return result
-    gross = float(df["gross_pnl"].sum()) if "gross_pnl" in df else None
+    gross = float(df["raw_gross_pnl"].sum()) if "raw_gross_pnl" in df else None
+    slippage = float(df["slippage_cost"].sum()) if "slippage_cost" in df else None
     fees = float(df[["entry_fee", "exit_fees"]].sum().sum()) if {"entry_fee","exit_fees"}.issubset(df) else None
     return {
         "by_strategy": aggregate("strategy"),
@@ -47,6 +48,9 @@ def trade_diagnostics(trades: pd.DataFrame, initial_equity: float) -> dict:
         ],
         "gross_total": gross,
         "fees_total": fees,
+        "slippage_total": slippage,
+        "raw_average_r": float((df["gross_r"] + df["slippage_r"]).mean()) if {"gross_r", "slippage_r"}.issubset(df) else None,
+        "slippage_average_r": float(df["slippage_r"].mean()) if "slippage_r" in df else None,
         "gross_average_r": float(df["gross_r"].mean()) if "gross_r" in df else None,
         "fees_average_r": float(df["fees_r"].mean()) if "fees_r" in df else None,
     }
