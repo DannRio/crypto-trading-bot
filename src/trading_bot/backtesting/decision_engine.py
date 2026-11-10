@@ -8,6 +8,8 @@ from trading_bot.backtesting.metrics import (
     calculate_trade_metrics,
 )
 from trading_bot.backtesting.models import BacktestResult, CompletedTrade
+from trading_bot.backtesting.timeframe_gates import HistoricalTimeframeGates
+from trading_bot.data import timeframe_to_milliseconds, validate_ohlcv
 from trading_bot.core.enums import Signal, SetupStatus
 from trading_bot.decision import DecisionEngine
 from trading_bot.planning import TradePlanConfig
@@ -81,6 +83,13 @@ def run_decision_backtest(
     strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES,
     strategy_parameters: dict[str, dict] | None = None,
     trade_plan_config: TradePlanConfig | None = None,
+    strategy_plan_configs: dict[str, TradePlanConfig] | None = None,
+    primary_timeframe: str = "1h",
+    confirmation_timeframes: tuple[str, ...] = (),
+    entry_timeframe: str | None = None,
+    secondary_data: dict[str, pd.DataFrame] | None = None,
+    execution_timeframe: str | None = None,
+    deduplicate_setups: bool = False,
 ) -> BacktestResult:
     """Backtest the same scored decision path used by MarketScanner.
 
@@ -97,7 +106,32 @@ def run_decision_backtest(
     if decision_lookback < 21:
         raise ValueError("decision_lookback must be at least 21 candles.")
 
+    historical_gates = HistoricalTimeframeGates(
+        primary_timeframe=primary_timeframe,
+        secondary_data=secondary_data or {},
+        confirmation_timeframes=confirmation_timeframes,
+        entry_timeframe=entry_timeframe,
+    )
     prepared = add_indicators(data.copy())
+    execution = None
+    execution_times = None
+    primary_delta = pd.to_timedelta(
+        timeframe_to_milliseconds(primary_timeframe), unit="ms"
+    )
+    if execution_timeframe:
+        if timeframe_to_milliseconds(execution_timeframe) >= timeframe_to_milliseconds(primary_timeframe):
+            raise ValueError("Execution timeframe must be lower than primary timeframe.")
+        if timeframe_to_milliseconds(primary_timeframe) % timeframe_to_milliseconds(execution_timeframe):
+            raise ValueError("Execution candles must divide the primary timeframe exactly.")
+        if not secondary_data or execution_timeframe not in secondary_data:
+            raise ValueError("Missing execution timeframe historical data.")
+        execution = secondary_data[execution_timeframe].copy()
+        execution["timestamp"] = pd.to_datetime(execution["timestamp"], utc=True)
+        execution = execution.sort_values("timestamp").reset_index(drop=True)
+        check = validate_ohlcv(execution, timeframe=execution_timeframe, min_rows=1)
+        if not check.valid:
+            raise ValueError("Invalid execution timeframe candles: " + "; ".join(check.issues))
+        execution_times = execution["timestamp"]
     equity = initial_equity
     peak_equity = equity
     max_drawdown = 0.0
@@ -105,20 +139,25 @@ def run_decision_backtest(
     trades: list[CompletedTrade] = []
     pending = None
     position = None
+    active_thesis = None
+    effective_dedupe = deduplicate_setups or "trend_continuation_v2" in strategy_names
     start_index = max(warmup_candles, 1)
 
     def evaluate_at(index: int):
         history = prepared.iloc[
             max(0, index - decision_lookback + 1): index + 1
         ]
-        return DecisionEngine(
+        decision = DecisionEngine(
             account_equity=equity,
             risk_percent=risk_percent,
             min_confirmed_score=min_confirmed_score,
             strategy_names=strategy_names,
             strategy_parameters=strategy_parameters,
             trade_plan_config=trade_plan_config,
+            strategy_plan_configs=strategy_plan_configs,
+            allow_short=allow_short,
         ).evaluate(history)
+        return historical_gates.apply(decision, prepared.iloc[index]["timestamp"])
 
     def close_position(
         candle,
@@ -150,6 +189,11 @@ def run_decision_backtest(
         total_gross = (
             position["realized_gross_pnl"]
             + gross_pnl
+        )
+        total_slippage_cost = (
+            position["entry_slippage_cost"]
+            + position["realized_exit_slippage_cost"]
+            + abs(executed_exit - raw_exit_price) * remaining_size
         )
         total_exit_fees = (
             position["realized_exit_fees"]
@@ -198,6 +242,14 @@ def run_decision_backtest(
                 risk_amount=risk_amount,
                 r_multiple=r_multiple,
                 tp1_hit=position["tp1_hit"],
+                gross_pnl=total_gross,
+                entry_fee=position["entry_fee"],
+                exit_fees=total_exit_fees,
+                gross_r=(total_gross / risk_amount if risk_amount > 0 else 0.0),
+                fees_r=((position["entry_fee"] + total_exit_fees) / risk_amount if risk_amount > 0 else 0.0),
+                raw_gross_pnl=total_gross + total_slippage_cost,
+                slippage_cost=total_slippage_cost,
+                slippage_r=(total_slippage_cost / risk_amount if risk_amount > 0 else 0.0),
             )
         )
         position = None
@@ -238,6 +290,9 @@ def run_decision_backtest(
         position["remaining_size"] -= exit_size
         position["realized_gross_pnl"] += gross_pnl
         position["realized_exit_fees"] += exit_fee
+        position["realized_exit_slippage_cost"] += (
+            abs(executed_exit - setup.take_profit_1) * exit_size
+        )
         position["realized_exit_value"] += (
             executed_exit * exit_size
         )
@@ -246,14 +301,11 @@ def run_decision_backtest(
         if setup.move_stop_to_break_even_after_tp1:
             position["effective_stop"] = position["entry_price"]
 
-    for i in range(start_index, len(prepared)):
-        candle = prepared.iloc[i]
-
-        # A pending setup may fill intrabar using information available from
-        # prior completed candles only.
+    def process_execution_bar(bar):
+        nonlocal position, pending, equity
         if position is None and pending is not None:
             raw_entry = _entry_price_from_zone(
-                candle,
+                bar,
                 pending["setup"],
             )
 
@@ -281,8 +333,10 @@ def run_decision_backtest(
                     "remaining_size": setup.position_size,
                     "initial_risk_amount": initial_risk_amount,
                     "signal_time": pending["signal_time"],
-                    "entry_time": candle["timestamp"],
+                    "entry_time": bar["timestamp"],
                     "entry_fee": entry_fee,
+                    "entry_slippage_cost": abs(executed_entry - raw_entry) * setup.position_size,
+                    "realized_exit_slippage_cost": 0.0,
                     "score": pending["assessment"].score,
                     "strategy": pending["assessment"].strategy,
                     "regime": pending["structure"].regime.value,
@@ -293,46 +347,46 @@ def run_decision_backtest(
                     "realized_exit_value": 0.0,
                 }
                 pending = None
-            else:
-                pending["bars_left"] -= 1
-                if pending["bars_left"] <= 0:
-                    pending = None
 
         # Manage the open position. An active stop always wins when both stop
-        # and target are reachable inside the same OHLC candle.
+        # and target are reachable inside the same OHLC bar.
         if position is not None:
             setup = position["setup"]
             effective_stop = position["effective_stop"]
 
             if setup.signal == Signal.LONG:
                 hit_stop = (
-                    float(candle["low"]) <= effective_stop
+                    float(bar["low"]) <= effective_stop
                 )
                 hit_tp1 = (
                     not position["tp1_hit"]
                     and setup.take_profit_1_fraction > 0
-                    and float(candle["high"]) >= setup.take_profit_1
+                    and float(bar["high"]) >= setup.take_profit_1
                 )
                 hit_tp2 = (
-                    float(candle["high"]) >= setup.take_profit_2
+                    float(bar["high"]) >= setup.take_profit_2
                 )
             else:
                 hit_stop = (
-                    float(candle["high"]) >= effective_stop
+                    float(bar["high"]) >= effective_stop
                 )
                 hit_tp1 = (
                     not position["tp1_hit"]
                     and setup.take_profit_1_fraction > 0
-                    and float(candle["low"]) <= setup.take_profit_1
+                    and float(bar["low"]) <= setup.take_profit_1
                 )
                 hit_tp2 = (
-                    float(candle["low"]) <= setup.take_profit_2
+                    float(bar["low"]) <= setup.take_profit_2
                 )
 
             if hit_stop:
                 close_position(
-                    candle,
-                    effective_stop,
+                    bar,
+                    (
+                        min(effective_stop, float(bar["open"]))
+                        if setup.signal == Signal.LONG
+                        else max(effective_stop, float(bar["open"]))
+                    ),
                     (
                         "STOP_LOSS_AFTER_TP1"
                         if position["tp1_hit"]
@@ -348,27 +402,27 @@ def run_decision_backtest(
                     if setup.signal == Signal.LONG:
                         stop_after_tp1 = (
                             position["tp1_hit"]
-                            and float(candle["low"])
+                            and float(bar["low"])
                             <= effective_stop
                         )
                     else:
                         stop_after_tp1 = (
                             position["tp1_hit"]
-                            and float(candle["high"])
+                            and float(bar["high"])
                             >= effective_stop
                         )
 
                     # If a new break-even stop and TP2 are both inside the same
-                    # candle after TP1, use the conservative outcome.
+                    # bar after TP1, use the conservative outcome.
                     if stop_after_tp1:
                         close_position(
-                            candle,
+                            bar,
                             effective_stop,
                             "STOP_LOSS_AFTER_TP1",
                         )
                     elif hit_tp2:
                         close_position(
-                            candle,
+                            bar,
                             setup.take_profit_2,
                             (
                                 "TAKE_PROFIT_2_AFTER_TP1"
@@ -376,6 +430,44 @@ def run_decision_backtest(
                                 else "TAKE_PROFIT_2"
                             ),
                         )
+
+
+    for i in range(start_index, len(prepared)):
+        candle = prepared.iloc[i]
+        if execution is None:
+            execution_bars = [candle]
+        else:
+            start = pd.Timestamp(candle["timestamp"])
+            end = start + primary_delta
+            lo = int(execution_times.searchsorted(start, side="left"))
+            hi = int(execution_times.searchsorted(end, side="left"))
+            execution_bars = list(
+                execution.iloc[lo:hi].to_dict("records")
+            )
+            expected = timeframe_to_milliseconds(primary_timeframe) // timeframe_to_milliseconds(execution_timeframe)
+            interval = pd.to_timedelta(
+                timeframe_to_milliseconds(execution_timeframe), unit="ms"
+            )
+            if (
+                len(execution_bars) != expected
+                or any(
+                    pd.Timestamp(bar["timestamp"]) != start + offset * interval
+                    for offset, bar in enumerate(execution_bars)
+                )
+            ):
+                raise ValueError(
+                    f"Missing or misaligned {execution_timeframe} execution candles "
+                    f"for primary bar {start}."
+                )
+        pending_at_open = pending is not None
+        for bar in execution_bars:
+            process_execution_bar(bar)
+
+        # Pending setups expire after full primary candles, not individual child candles.
+        if pending_at_open and pending is not None:
+            pending["bars_left"] -= 1
+            if pending["bars_left"] <= 0:
+                pending = None
 
         # Mark-to-market only the still-open quantity.
         mark_equity = equity
@@ -409,8 +501,15 @@ def run_decision_backtest(
             ):
                 pending = None
 
+            # A thesis is rearmed only after it has genuinely stopped
+            # qualifying. Prevent endless re-entry into the same persistent
+            # EMA/RSI condition immediately after a stop.
+            if decision.assessment.status != SetupStatus.CONFIRMED:
+                active_thesis = None
+            thesis_key = (decision.assessment.strategy, decision.assessment.signal)
             if (
                 pending is None
+                and (not effective_dedupe or thesis_key != active_thesis)
                 and decision.assessment.status
                 == SetupStatus.CONFIRMED
                 and decision.setup is not None
@@ -419,6 +518,7 @@ def run_decision_backtest(
                     or decision.assessment.signal != Signal.SHORT
                 )
             ):
+                active_thesis = thesis_key
                 pending = {
                     "setup": decision.setup,
                     "assessment": decision.assessment,
