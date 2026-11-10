@@ -281,131 +281,131 @@ def run_decision_backtest(
 
     def process_execution_bar(bar):
         nonlocal position, pending, equity
-            if position is None and pending is not None:
-                raw_entry = _entry_price_from_zone(
-                    bar,
-                    pending["setup"],
+        if position is None and pending is not None:
+            raw_entry = _entry_price_from_zone(
+                bar,
+                pending["setup"],
+            )
+
+            if raw_entry is not None:
+                setup = pending["setup"]
+                executed_entry = _entry_with_slippage(
+                    raw_entry,
+                    setup.signal,
+                    slippage_bps,
+                )
+                entry_fee = (
+                    executed_entry
+                    * setup.position_size
+                    * fee_rate
+                )
+                initial_risk_amount = (
+                    abs(executed_entry - setup.stop_loss)
+                    * setup.position_size
+                )
+                equity -= entry_fee
+                position = {
+                    "setup": setup,
+                    "entry_price": executed_entry,
+                    "initial_size": setup.position_size,
+                    "remaining_size": setup.position_size,
+                    "initial_risk_amount": initial_risk_amount,
+                    "signal_time": pending["signal_time"],
+                    "entry_time": bar["timestamp"],
+                    "entry_fee": entry_fee,
+                    "score": pending["assessment"].score,
+                    "strategy": pending["assessment"].strategy,
+                    "regime": pending["structure"].regime.value,
+                    "tp1_hit": False,
+                    "effective_stop": setup.stop_loss,
+                    "realized_gross_pnl": 0.0,
+                    "realized_exit_fees": 0.0,
+                    "realized_exit_value": 0.0,
+                }
+                pending = None
+
+        # Manage the open position. An active stop always wins when both stop
+        # and target are reachable inside the same OHLC bar.
+        if position is not None:
+            setup = position["setup"]
+            effective_stop = position["effective_stop"]
+
+            if setup.signal == Signal.LONG:
+                hit_stop = (
+                    float(bar["low"]) <= effective_stop
+                )
+                hit_tp1 = (
+                    not position["tp1_hit"]
+                    and setup.take_profit_1_fraction > 0
+                    and float(bar["high"]) >= setup.take_profit_1
+                )
+                hit_tp2 = (
+                    float(bar["high"]) >= setup.take_profit_2
+                )
+            else:
+                hit_stop = (
+                    float(bar["high"]) >= effective_stop
+                )
+                hit_tp1 = (
+                    not position["tp1_hit"]
+                    and setup.take_profit_1_fraction > 0
+                    and float(bar["low"]) <= setup.take_profit_1
+                )
+                hit_tp2 = (
+                    float(bar["low"]) <= setup.take_profit_2
                 )
 
-                if raw_entry is not None:
-                    setup = pending["setup"]
-                    executed_entry = _entry_with_slippage(
-                        raw_entry,
-                        setup.signal,
-                        slippage_bps,
-                    )
-                    entry_fee = (
-                        executed_entry
-                        * setup.position_size
-                        * fee_rate
-                    )
-                    initial_risk_amount = (
-                        abs(executed_entry - setup.stop_loss)
-                        * setup.position_size
-                    )
-                    equity -= entry_fee
-                    position = {
-                        "setup": setup,
-                        "entry_price": executed_entry,
-                        "initial_size": setup.position_size,
-                        "remaining_size": setup.position_size,
-                        "initial_risk_amount": initial_risk_amount,
-                        "signal_time": pending["signal_time"],
-                        "entry_time": bar["timestamp"],
-                        "entry_fee": entry_fee,
-                        "score": pending["assessment"].score,
-                        "strategy": pending["assessment"].strategy,
-                        "regime": pending["structure"].regime.value,
-                        "tp1_hit": False,
-                        "effective_stop": setup.stop_loss,
-                        "realized_gross_pnl": 0.0,
-                        "realized_exit_fees": 0.0,
-                        "realized_exit_value": 0.0,
-                    }
-                    pending = None
+            if hit_stop:
+                close_position(
+                    bar,
+                    (
+                        min(effective_stop, float(bar["open"]))
+                        if setup.signal == Signal.LONG
+                        else max(effective_stop, float(bar["open"]))
+                    ),
+                    (
+                        "STOP_LOSS_AFTER_TP1"
+                        if position["tp1_hit"]
+                        else "STOP_LOSS"
+                    ),
+                )
+            else:
+                if hit_tp1:
+                    take_tp1()
 
-            # Manage the open position. An active stop always wins when both stop
-            # and target are reachable inside the same OHLC bar.
-            if position is not None:
-                setup = position["setup"]
-                effective_stop = position["effective_stop"]
+                if position is not None:
+                    effective_stop = position["effective_stop"]
+                    if setup.signal == Signal.LONG:
+                        stop_after_tp1 = (
+                            position["tp1_hit"]
+                            and float(bar["low"])
+                            <= effective_stop
+                        )
+                    else:
+                        stop_after_tp1 = (
+                            position["tp1_hit"]
+                            and float(bar["high"])
+                            >= effective_stop
+                        )
 
-                if setup.signal == Signal.LONG:
-                    hit_stop = (
-                        float(bar["low"]) <= effective_stop
-                    )
-                    hit_tp1 = (
-                        not position["tp1_hit"]
-                        and setup.take_profit_1_fraction > 0
-                        and float(bar["high"]) >= setup.take_profit_1
-                    )
-                    hit_tp2 = (
-                        float(bar["high"]) >= setup.take_profit_2
-                    )
-                else:
-                    hit_stop = (
-                        float(bar["high"]) >= effective_stop
-                    )
-                    hit_tp1 = (
-                        not position["tp1_hit"]
-                        and setup.take_profit_1_fraction > 0
-                        and float(bar["low"]) <= setup.take_profit_1
-                    )
-                    hit_tp2 = (
-                        float(bar["low"]) <= setup.take_profit_2
-                    )
-
-                if hit_stop:
-                    close_position(
-                        bar,
-                        (
-                            min(effective_stop, float(bar["open"]))
-                            if setup.signal == Signal.LONG
-                            else max(effective_stop, float(bar["open"]))
-                        ),
-                        (
-                            "STOP_LOSS_AFTER_TP1"
-                            if position["tp1_hit"]
-                            else "STOP_LOSS"
-                        ),
-                    )
-                else:
-                    if hit_tp1:
-                        take_tp1()
-
-                    if position is not None:
-                        effective_stop = position["effective_stop"]
-                        if setup.signal == Signal.LONG:
-                            stop_after_tp1 = (
-                                position["tp1_hit"]
-                                and float(bar["low"])
-                                <= effective_stop
-                            )
-                        else:
-                            stop_after_tp1 = (
-                                position["tp1_hit"]
-                                and float(bar["high"])
-                                >= effective_stop
-                            )
-
-                        # If a new break-even stop and TP2 are both inside the same
-                        # bar after TP1, use the conservative outcome.
-                        if stop_after_tp1:
-                            close_position(
-                                bar,
-                                effective_stop,
-                                "STOP_LOSS_AFTER_TP1",
-                            )
-                        elif hit_tp2:
-                            close_position(
-                                bar,
-                                setup.take_profit_2,
-                                (
-                                    "TAKE_PROFIT_2_AFTER_TP1"
-                                    if position["tp1_hit"]
-                                    else "TAKE_PROFIT_2"
-                                ),
-                            )
+                    # If a new break-even stop and TP2 are both inside the same
+                    # bar after TP1, use the conservative outcome.
+                    if stop_after_tp1:
+                        close_position(
+                            bar,
+                            effective_stop,
+                            "STOP_LOSS_AFTER_TP1",
+                        )
+                    elif hit_tp2:
+                        close_position(
+                            bar,
+                            setup.take_profit_2,
+                            (
+                                "TAKE_PROFIT_2_AFTER_TP1"
+                                if position["tp1_hit"]
+                                else "TAKE_PROFIT_2"
+                            ),
+                        )
 
 
     for i in range(start_index, len(prepared)):
