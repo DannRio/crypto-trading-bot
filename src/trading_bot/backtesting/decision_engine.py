@@ -280,6 +280,7 @@ def run_decision_backtest(
             position["effective_stop"] = position["entry_price"]
 
     def process_execution_bar(bar):
+        nonlocal position, pending, equity
             if position is None and pending is not None:
                 raw_entry = _entry_price_from_zone(
                     bar,
