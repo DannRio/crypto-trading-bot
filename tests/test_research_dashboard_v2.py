@@ -64,3 +64,24 @@ def test_api_local_oos_requires_sufficient_bars(monkeypatch, tmp_path):
     )
     assert response.status_code == 422
     assert "1500" in response.json()["detail"]
+
+
+def test_local_invalid_dataset_reports_specific_issue(monkeypatch, tmp_path):
+    malformed = history(260)
+    malformed.loc[9, "high"] = malformed.loc[9, "low"] - 2.0
+    web.HistoricalDataStore(tmp_path).upsert(
+        "kraken", "spot", "BTC/USD", "1h", malformed
+    )
+    monkeypatch.setattr(web, "HISTORY_ROOT", tmp_path)
+    response = client.get("/api/backtest", params={"data_source": "local"})
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert "invalid OHLC" in detail
+    assert "Source:" in detail
+
+
+def test_dashboard_displays_backtest_errors_in_same_panel():
+    response = client.get("/")
+    assert response.status_code == 200
+    assert 'id="btError"' in response.text
+    assert '$("#btError").textContent=message' in response.text
