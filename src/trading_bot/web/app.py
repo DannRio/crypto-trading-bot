@@ -24,6 +24,7 @@ from trading_bot.assisted import (
 from trading_bot.backtesting import run_decision_backtest
 from trading_bot.research.diagnostics import trade_diagnostics
 from trading_bot.research.exit_ablation import run_exit_ablation
+from trading_bot.research.evaluation import run_out_of_sample_evaluation
 from trading_bot.execution import (
     LiveExecutionGuard,
     ManagedDryRunBrokerAdapter,
@@ -735,6 +736,7 @@ def backtest(
     entry_timeframe: str = Query("", max_length=20),
     execution_timeframe: str = Query("", max_length=20),
     compare_exits: bool = Query(False),
+    validate_oos: bool = Query(False),
     fee_rate: float = Query(0.001, ge=0, le=0.05),
     slippage_bps: float = Query(5.0, ge=0, le=500),
 ):
@@ -754,6 +756,8 @@ def backtest(
         execution_tf = validate_entry_timeframe(timeframe, execution_tf)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    if validate_oos and data_source != "local":
+        raise HTTPException(422, "Chronological validation requires saved local multi-year data.")
     if (htf or ltf or execution_tf) and data_source != "local":
         raise HTTPException(
             422,
@@ -909,6 +913,33 @@ def backtest(
         )
         exit_ablation = _safe(exit_ablation_frame.to_dict("records"))
 
+    oos_summary = None
+    if validate_oos:
+        if len(closed) < 1500:
+            raise HTTPException(
+                422, "At least 1500 historical candles required for train/validation/test."
+            )
+        train_cut = closed["timestamp"].iloc[int(len(closed) * 0.60)]
+        validation_cut = closed["timestamp"].iloc[int(len(closed) * 0.80)]
+        oos_frame, _ = run_out_of_sample_evaluation(
+            closed,
+            train_cutoff=train_cut,
+            validation_cutoff=validation_cut,
+            initial_equity=equity,
+            risk_percent=risk_percent / 100,
+            min_confirmed_score=min_score,
+            fee_rate=fee_rate,
+            slippage_bps=slippage_bps,
+            allow_short=market_type != "spot",
+            strategy_names=strategy_names,
+            primary_timeframe=timeframe,
+            confirmation_timeframes=htf,
+            entry_timeframe=ltf,
+            execution_timeframe=execution_tf,
+            secondary_data=secondary_data,
+        )
+        oos_summary = _safe(oos_frame.to_dict("records"))
+
     data_start = (
         closed["timestamp"].min()
         if not closed.empty
@@ -955,6 +986,7 @@ def backtest(
         ),
         "diagnostics": _safe(trade_diagnostics(result.trades, equity)),
         "exit_ablation": exit_ablation,
+        "chronological_validation": oos_summary,
         "warning": (
             "Historical MTF confirmation is as-of closed candles. Intrabar "
             "fills are resolved with lower timeframe OHLC when an execution "
