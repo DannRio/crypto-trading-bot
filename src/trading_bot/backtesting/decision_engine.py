@@ -190,6 +190,11 @@ def run_decision_backtest(
             position["realized_gross_pnl"]
             + gross_pnl
         )
+        total_slippage_cost = (
+            position["entry_slippage_cost"]
+            + position["realized_exit_slippage_cost"]
+            + abs(executed_exit - raw_exit_price) * remaining_size
+        )
         total_exit_fees = (
             position["realized_exit_fees"]
             + exit_fee
@@ -242,6 +247,9 @@ def run_decision_backtest(
                 exit_fees=total_exit_fees,
                 gross_r=(total_gross / risk_amount if risk_amount > 0 else 0.0),
                 fees_r=((position["entry_fee"] + total_exit_fees) / risk_amount if risk_amount > 0 else 0.0),
+                raw_gross_pnl=total_gross + total_slippage_cost,
+                slippage_cost=total_slippage_cost,
+                slippage_r=(total_slippage_cost / risk_amount if risk_amount > 0 else 0.0),
             )
         )
         position = None
@@ -282,6 +290,9 @@ def run_decision_backtest(
         position["remaining_size"] -= exit_size
         position["realized_gross_pnl"] += gross_pnl
         position["realized_exit_fees"] += exit_fee
+        position["realized_exit_slippage_cost"] += (
+            abs(executed_exit - setup.take_profit_1) * exit_size
+        )
         position["realized_exit_value"] += (
             executed_exit * exit_size
         )
@@ -324,6 +335,8 @@ def run_decision_backtest(
                     "signal_time": pending["signal_time"],
                     "entry_time": bar["timestamp"],
                     "entry_fee": entry_fee,
+                    "entry_slippage_cost": abs(executed_entry - raw_entry) * setup.position_size,
+                    "realized_exit_slippage_cost": 0.0,
                     "score": pending["assessment"].score,
                     "strategy": pending["assessment"].strategy,
                     "regime": pending["structure"].regime.value,
