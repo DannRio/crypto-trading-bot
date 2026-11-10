@@ -26,6 +26,7 @@ class DecisionEngine:
         strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES,
         strategy_parameters: dict[str, dict] | None = None,
         trade_plan_config: TradePlanConfig | None = None,
+        strategy_plan_configs: dict[str, TradePlanConfig] | None = None,
         allow_short: bool = True,
     ):
         self.allow_short = allow_short
@@ -40,6 +41,7 @@ class DecisionEngine:
         self.trade_plan_config = (
             trade_plan_config or TradePlanConfig()
         )
+        self.strategy_plan_configs = strategy_plan_configs or {}
 
     def evaluate(self, data: pd.DataFrame) -> DecisionResult:
         structure = analyze_market_structure(data)
@@ -74,7 +76,9 @@ class DecisionEngine:
                 structure=structure,
                 account_equity=self.account_equity,
                 risk_percent=self.risk_percent,
-                config=self.trade_plan_config,
+                config=self.strategy_plan_configs.get(
+                    assessment.strategy, self.trade_plan_config
+                ),
             )
 
         return DecisionResult(
