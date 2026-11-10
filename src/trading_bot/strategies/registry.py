@@ -12,6 +12,7 @@ from trading_bot.strategies.range_mean_reversion import (
 from trading_bot.strategies.trend_continuation import (
     evaluate_trend_continuation,
 )
+from trading_bot.strategies.trend_continuation_v2 import evaluate_trend_continuation_v2
 
 
 StrategyEvaluator = Callable[
@@ -23,6 +24,7 @@ DEFAULT_STRATEGIES = ("trend_continuation",)
 
 STRATEGY_EVALUATORS: dict[str, StrategyEvaluator] = {
     "trend_continuation": evaluate_trend_continuation,
+    "trend_continuation_v2": evaluate_trend_continuation_v2,
     "breakout_retest": evaluate_breakout_retest,
     "range_mean_reversion": evaluate_range_mean_reversion,
 }
