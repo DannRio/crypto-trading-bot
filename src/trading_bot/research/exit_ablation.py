@@ -1,5 +1,5 @@
 """Reproducible, fixed-parameter exit ablation; never selects the best variant."""
-from dataclasses import replace
+from dataclasses import replace, asdict
 
 import pandas as pd
 
@@ -26,10 +26,15 @@ def run_exit_ablation(data: pd.DataFrame, *, config: TradePlanConfig | None = No
     results = {}
     if "trade_plan_config" in kwargs:
         raise ValueError("Pass config rather than trade_plan_config.")
+    profiles = kwargs.pop("strategy_plan_configs", {}) or {}
     for name, overrides in EXIT_VARIANTS.items():
+        overrides = dict(overrides, reward_to_risk_1=1.0, reward_to_risk_2=2.0, target_mode="fixed_r")
+        effective = replace(base, **overrides)
+        effective_profiles = {key: replace(value, **overrides) for key, value in profiles.items()}
         result = run_decision_backtest(
             data.copy(),
-            trade_plan_config=replace(base, **overrides),
+            trade_plan_config=effective,
+            strategy_plan_configs=effective_profiles,
             **kwargs,
         )
         trades = result.trades
@@ -37,6 +42,8 @@ def run_exit_ablation(data: pd.DataFrame, *, config: TradePlanConfig | None = No
         losses = trades.loc[trades["pnl"] < 0, "pnl"] if not trades.empty else pd.Series(dtype=float)
         rows.append({
             "exit_variant": name,
+            "effective_config": asdict(effective),
+            "effective_strategy_configs": {key: asdict(value) for key, value in effective_profiles.items()},
             "trades": result.total_trades,
             "return_pct": result.total_return_pct,
             "max_drawdown_pct": result.max_drawdown_pct,

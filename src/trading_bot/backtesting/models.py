@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 
@@ -30,6 +30,11 @@ class CompletedTrade:
     raw_gross_pnl: float = 0.0
     slippage_cost: float = 0.0
     slippage_r: float = 0.0
+    event_id: str | None = None
+    setup_type: str = "legacy_state"
+    ambiguous_bars: int = 0
+    mfe_r: float = 0.0
+    mae_r: float = 0.0
 
 
 @dataclass
@@ -43,3 +48,5 @@ class BacktestResult:
     profit_factor: float
     average_pnl: float
     trades: pd.DataFrame
+    execution_diagnostics: dict = field(default_factory=dict)
+    equity_curve: list[dict] = field(default_factory=list)

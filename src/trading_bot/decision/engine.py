@@ -1,4 +1,5 @@
 from dataclasses import replace
+from collections.abc import Callable
 
 import pandas as pd
 
@@ -28,8 +29,14 @@ class DecisionEngine:
         trade_plan_config: TradePlanConfig | None = None,
         strategy_plan_configs: dict[str, TradePlanConfig] | None = None,
         allow_short: bool = True,
+        candidate_gate: Callable | None = None,
+        fee_rate: float = 0.001,
+        slippage_bps: float = 5.0,
     ):
         self.allow_short = allow_short
+        self.candidate_gate = candidate_gate
+        self.fee_rate = fee_rate
+        self.slippage_bps = slippage_bps
         self.account_equity = account_equity
         self.risk_percent = risk_percent
         self.min_confirmed_score = min_confirmed_score
@@ -61,29 +68,41 @@ class DecisionEngine:
                 ) if item.signal == Signal.SHORT else item
                 for item in candidates
             )
+        ungated_candidates = candidates
+        if self.candidate_gate is not None:
+            candidates = tuple(self.candidate_gate(item) for item in candidates)
+        plans = {}
+        viable = []
+        latest = data.iloc[-1]
+        for candidate in candidates:
+            if candidate.status == SetupStatus.CONFIRMED:
+                plan = create_trade_setup(
+                    signal=candidate.signal, status=candidate.status,
+                    score=candidate.score, reasons=candidate.reasons,
+                    entry_price=float(latest["close"]), atr=float(latest["atr_14"]),
+                    structure=structure, account_equity=self.account_equity,
+                    risk_percent=self.risk_percent,
+                    config=self.strategy_plan_configs.get(candidate.strategy, self.trade_plan_config),
+                    event_id=candidate.event_id, setup_type=candidate.setup_type,
+                    anchor_price=candidate.anchor_price, invalidation_price=candidate.invalidation_price,
+                    target_price=candidate.target_price, cancel_price=candidate.cancel_price,
+                    event_time=candidate.event_time, fee_rate=self.fee_rate,
+                    slippage_bps=self.slippage_bps,
+                )
+                if plan is None:
+                    candidate = replace(candidate, status=SetupStatus.NO_TRADE, signal=Signal.NO_TRADE,
+                                        reason=candidate.reason + "; Invalid structural stop/target or insufficient net reward.")
+                else:
+                    plans[candidate.strategy] = plan
+            viable.append(candidate)
+        candidates = tuple(viable)
         assessment = select_best_assessment(candidates)
-
-        setup = None
-        if assessment.status == SetupStatus.CONFIRMED:
-            latest = data.iloc[-1]
-            setup = create_trade_setup(
-                signal=assessment.signal,
-                status=assessment.status,
-                score=assessment.score,
-                reasons=assessment.reasons,
-                entry_price=float(latest["close"]),
-                atr=float(latest["atr_14"]),
-                structure=structure,
-                account_equity=self.account_equity,
-                risk_percent=self.risk_percent,
-                config=self.strategy_plan_configs.get(
-                    assessment.strategy, self.trade_plan_config
-                ),
-            )
+        setup = plans.get(assessment.strategy) if assessment.status == SetupStatus.CONFIRMED else None
 
         return DecisionResult(
             assessment=assessment,
             structure=structure,
             setup=setup,
             candidates=candidates,
+            ungated_candidates=ungated_candidates,
         )

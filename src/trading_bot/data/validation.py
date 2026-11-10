@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+import numpy as np
+
 import pandas as pd
 
 
@@ -23,6 +25,8 @@ def _timeframe_delta(timeframe: str) -> pd.Timedelta:
     if len(timeframe) < 2:
         raise ValueError(f"Invalid timeframe: {timeframe}")
     value = int(timeframe[:-1])
+    if value <= 0:
+        raise ValueError("Timeframe must be positive.")
     unit = timeframe[-1].lower()
     units = {"m": "min", "h": "h", "d": "D", "w": "W"}
     if unit not in units:
@@ -48,7 +52,20 @@ def validate_ohlcv(
     if row_count < min_rows:
         issues.append(f"Only {row_count} candles available; {min_rows} required.")
 
-    duplicate_timestamps = int(df["timestamp"].duplicated().sum())
+    # Coerce only for validation. Never silently repair input used for execution.
+    numeric = df[list(REQUIRED_OHLCV_COLUMNS[1:])].apply(pd.to_numeric, errors="coerce")
+    bad_numeric = int((~np.isfinite(numeric.to_numpy(dtype=float))).any(axis=1).sum())
+    if bad_numeric:
+        issues.append(f"{bad_numeric} non-finite or non-numeric OHLCV row(s) detected.")
+    timestamps = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    if timestamps.isna().any():
+        issues.append("Invalid or missing candle timestamp(s) detected.")
+    valid_times = timestamps.dropna()
+    if not valid_times.is_monotonic_increasing:
+        issues.append("Candle timestamps must be sorted in increasing order.")
+    duplicate_timestamps = int(timestamps.duplicated().sum())
+    df = df.copy()
+    df[list(REQUIRED_OHLCV_COLUMNS[1:])] = numeric
     invalid_ohlc = (
         (df["high"] < df["low"])
         | (df["high"] < df["open"])
@@ -73,7 +90,11 @@ def validate_ohlcv(
     missing_intervals = 0
     if timeframe and row_count >= 2:
         expected = _timeframe_delta(timeframe)
-        timestamps = pd.to_datetime(df["timestamp"], utc=True).sort_values().drop_duplicates()
+        # Weekly candles are anchored to Monday, other fixed intervals to epoch UTC.
+        origin = pd.Timestamp("1970-01-05", tz="UTC") if timeframe.endswith("w") else pd.Timestamp("1970-01-01", tz="UTC")
+        if not valid_times.empty and ((valid_times - origin) % expected != pd.Timedelta(0)).any():
+            issues.append("Candle timestamp(s) are not aligned to the requested timeframe.")
+        timestamps = valid_times.sort_values().drop_duplicates()
         for diff in timestamps.diff().dropna():
             if diff > expected:
                 missing_intervals += max(int(round(diff / expected)) - 1, 1)
@@ -91,3 +112,12 @@ def validate_ohlcv(
         issues=tuple(issues),
         warnings=tuple(warnings),
     )
+
+
+def latest_expected_close(as_of, timeframe: str) -> pd.Timestamp:
+    """Latest scheduled close at/before as_of for UTC fixed-interval candles."""
+    stamp = pd.Timestamp(as_of)
+    stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
+    delta = _timeframe_delta(timeframe)
+    origin = pd.Timestamp("1970-01-05", tz="UTC") if timeframe.endswith("w") else pd.Timestamp("1970-01-01", tz="UTC")
+    return origin + ((stamp - origin) // delta) * delta

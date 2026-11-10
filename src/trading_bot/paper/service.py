@@ -17,6 +17,7 @@ from trading_bot.scanner import (
     MarketScanner,
     UniverseConfig,
 )
+from trading_bot.scanner.multi_timeframe import regime_alignment
 from trading_bot.strategies import (
     DEFAULT_STRATEGIES,
     normalize_strategy_names,
@@ -390,6 +391,7 @@ class PaperTradingService:
             ),
             strategy_names=self.config.strategy_names,
             data_fetcher=self._cached_data_fetcher,
+            fee_rate=self.config.fee_rate, slippage_bps=self.config.slippage_bps,
         )
 
     def _return_series(
@@ -527,6 +529,17 @@ class PaperTradingService:
                 and result.assessment.signal == order.signal
                 and result.assessment.strategy == order.strategy
             )
+            if order.event_id:
+                direction = 1 if order.signal == Signal.LONG else -1
+                cancel = order.cancel_price if order.cancel_price is not None else order.stop_loss
+                mark = self.broker.last_prices.get(order.symbol)
+                expected = "RANGE" if order.setup_type == "range_reversal" else ("BULL_TREND" if direction == 1 else "BEAR_TREND")
+                confirmations = getattr(result, "confirmations", ())
+                contexts_ok = all(c.error is None and c.regime is not None
+                                  and regime_alignment(order.signal, c.regime, order.strategy) is True for c in confirmations)
+                still_valid = (mark is not None and direction * (mark - cancel) > 0
+                               and result.structure is not None and result.structure.regime.value == expected
+                               and contexts_ok)
             if not still_valid:
                 self.broker.cancel_order(
                     order.order_id,

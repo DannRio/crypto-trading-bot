@@ -1,4 +1,8 @@
 from dataclasses import asdict
+from copy import deepcopy
+import math
+from types import SimpleNamespace
+from trading_bot.core.candle_execution import replay_price_path, economic_break_even, ohlc_paths
 
 import pandas as pd
 
@@ -90,6 +94,8 @@ def run_decision_backtest(
     secondary_data: dict[str, pd.DataFrame] | None = None,
     execution_timeframe: str | None = None,
     deduplicate_setups: bool = False,
+    ambiguity_policy: str = "conservative",
+    cost_aware_sizing: bool = True,
 ) -> BacktestResult:
     """Backtest the same scored decision path used by MarketScanner.
 
@@ -99,6 +105,16 @@ def run_decision_backtest(
     optionally, move the remaining stop to break-even. Same-candle ambiguity
     remains conservative: an active stop wins over a target.
     """
+    if ambiguity_policy not in {"conservative", "optimistic"}:
+        raise ValueError("ambiguity_policy must be conservative or optimistic.")
+    if (not all(math.isfinite(x) for x in (initial_equity, risk_percent, fee_rate, slippage_bps))
+            or not 0 < risk_percent <= 1 or not 0 <= fee_rate < 1 or not 0 <= slippage_bps < 10000):
+        raise ValueError("Invalid risk or execution cost assumptions.")
+    data = data.copy()
+    quality = validate_ohlcv(data, timeframe=primary_timeframe)
+    if not quality.valid or quality.missing_intervals:
+        raise ValueError("Invalid primary candles: " + "; ".join(quality.issues + quality.warnings))
+    data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True)
     if initial_equity <= 0:
         raise ValueError("initial_equity must be positive.")
     if entry_valid_bars <= 0:
@@ -140,6 +156,12 @@ def run_decision_backtest(
     pending = None
     position = None
     active_thesis = None
+    seen_events = set()
+    execution_diagnostics = {"ambiguous_bars": 0, "pending_created": 0,
+                             "pending_cancelled": 0, "pending_expired": 0,
+                             "ambiguity_policy": ambiguity_policy,
+                             "path_model": "OHLC extrema + TP1 reversal; sensitivity, not tick reconstruction"}
+    equity_curve = []
     effective_dedupe = deduplicate_setups or "trend_continuation_v2" in strategy_names
     start_index = max(warmup_candles, 1)
 
@@ -156,8 +178,11 @@ def run_decision_backtest(
             trade_plan_config=trade_plan_config,
             strategy_plan_configs=strategy_plan_configs,
             allow_short=allow_short,
+            candidate_gate=lambda assessment: historical_gates.apply_assessment(
+                assessment, prepared.iloc[index]["timestamp"]),
+            fee_rate=fee_rate, slippage_bps=slippage_bps,
         ).evaluate(history)
-        return historical_gates.apply(decision, prepared.iloc[index]["timestamp"])
+        return decision
 
     def close_position(
         candle,
@@ -250,6 +275,9 @@ def run_decision_backtest(
                 raw_gross_pnl=total_gross + total_slippage_cost,
                 slippage_cost=total_slippage_cost,
                 slippage_r=(total_slippage_cost / risk_amount if risk_amount > 0 else 0.0),
+                event_id=setup.event_id, setup_type=setup.setup_type,
+                ambiguous_bars=position["ambiguous_bars"],
+                mfe_r=position["mfe_r"], mae_r=position["mae_r"],
             )
         )
         position = None
@@ -299,138 +327,105 @@ def run_decision_backtest(
         position["tp1_hit"] = True
 
         if setup.move_stop_to_break_even_after_tp1:
-            position["effective_stop"] = position["entry_price"]
+            stop = economic_break_even(position["entry_price"], setup.signal, fee_rate,
+                                       slippage_bps, setup.break_even_mode)
+            # Do not activate a stop beyond the price that caused activation.
+            if ((setup.signal == Signal.LONG and stop < setup.take_profit_1)
+                    or (setup.signal == Signal.SHORT and stop > setup.take_profit_1)):
+                position["effective_stop"] = stop
+
+    def update_excursion(price):
+        if position is None:
+            return
+        distance = abs(position["entry_price"] - position["setup"].stop_loss)
+        direction = 1 if position["setup"].signal == Signal.LONG else -1
+        excursion = direction * (price - position["entry_price"]) / distance if distance else 0
+        position["mfe_r"] = max(position["mfe_r"], excursion)
+        position["mae_r"] = min(position["mae_r"], excursion)
+
+    def fill_entry(bar, raw_entry):
+        nonlocal position, pending, equity
+        setup = pending["setup"]
+        direction = 1 if setup.signal == Signal.LONG else -1
+        executed_entry = _entry_with_slippage(raw_entry, setup.signal, slippage_bps)
+        if (direction * (executed_entry - setup.stop_loss) <= 0
+                or direction * (setup.take_profit_1 - executed_entry) <= 0):
+            pending = None
+            return
+        size = setup.position_size
+        if cost_aware_sizing:
+            stop_fill = _exit_with_slippage(setup.stop_loss, setup.signal, slippage_bps)
+            loss_per_unit = direction * (executed_entry - stop_fill) + fee_rate * (executed_entry + stop_fill)
+            size = min(size, setup.target_risk_amount / loss_per_unit,
+                       equity / (executed_entry * (1 + fee_rate)))
+        if size <= 0:
+            pending = None
+            return
+        entry_fee = executed_entry * size * fee_rate
+        equity -= entry_fee
+        position = {
+            "setup": setup, "entry_price": executed_entry,
+            "initial_size": size, "remaining_size": size,
+            "initial_risk_amount": abs(executed_entry - setup.stop_loss) * size,
+            "signal_time": pending["signal_time"], "entry_time": bar["timestamp"],
+            "entry_fee": entry_fee, "entry_slippage_cost": abs(executed_entry - raw_entry) * size,
+            "realized_exit_slippage_cost": 0.0, "score": pending["assessment"].score,
+            "strategy": pending["assessment"].strategy, "regime": pending["structure"].regime.value,
+            "tp1_hit": False, "effective_stop": setup.stop_loss,
+            "realized_gross_pnl": 0.0, "realized_exit_fees": 0.0,
+            "realized_exit_value": 0.0, "ambiguous_bars": 0, "mfe_r": 0.0, "mae_r": 0.0,
+        }
+        pending = None
+
+    def simulate_path(bar, points):
+        def get_position():
+            if position is None:
+                return None
+            setup = position["setup"]
+            return SimpleNamespace(signal=setup.signal, effective_stop=position["effective_stop"],
+                                   take_profit_1=setup.take_profit_1, take_profit_2=setup.take_profit_2,
+                                   tp1_hit=position["tp1_hit"])
+        def cancel():
+            nonlocal pending
+            pending = None
+        replay_price_path(points, get_position=get_position,
+                          get_pending=lambda: pending["setup"] if pending is not None else None,
+                          fill_entry=lambda price: fill_entry(bar, price), cancel_pending=cancel,
+                          take_tp1=take_tp1, close_position=lambda price, reason: close_position(bar, price, reason),
+                          observe=update_excursion)
 
     def process_execution_bar(bar):
         nonlocal position, pending, equity
-        if position is None and pending is not None:
-            raw_entry = _entry_price_from_zone(
-                bar,
-                pending["setup"],
-            )
-
-            if raw_entry is not None:
-                setup = pending["setup"]
-                executed_entry = _entry_with_slippage(
-                    raw_entry,
-                    setup.signal,
-                    slippage_bps,
-                )
-                entry_fee = (
-                    executed_entry
-                    * setup.position_size
-                    * fee_rate
-                )
-                initial_risk_amount = (
-                    abs(executed_entry - setup.stop_loss)
-                    * setup.position_size
-                )
-                equity -= entry_fee
-                position = {
-                    "setup": setup,
-                    "entry_price": executed_entry,
-                    "initial_size": setup.position_size,
-                    "remaining_size": setup.position_size,
-                    "initial_risk_amount": initial_risk_amount,
-                    "signal_time": pending["signal_time"],
-                    "entry_time": bar["timestamp"],
-                    "entry_fee": entry_fee,
-                    "entry_slippage_cost": abs(executed_entry - raw_entry) * setup.position_size,
-                    "realized_exit_slippage_cost": 0.0,
-                    "score": pending["assessment"].score,
-                    "strategy": pending["assessment"].strategy,
-                    "regime": pending["structure"].regime.value,
-                    "tp1_hit": False,
-                    "effective_stop": setup.stop_loss,
-                    "realized_gross_pnl": 0.0,
-                    "realized_exit_fees": 0.0,
-                    "realized_exit_value": 0.0,
-                }
-                pending = None
-
-        # Manage the open position. An active stop always wins when both stop
-        # and target are reachable inside the same OHLC bar.
-        if position is not None:
-            setup = position["setup"]
-            effective_stop = position["effective_stop"]
-
-            if setup.signal == Signal.LONG:
-                hit_stop = (
-                    float(bar["low"]) <= effective_stop
-                )
-                hit_tp1 = (
-                    not position["tp1_hit"]
-                    and setup.take_profit_1_fraction > 0
-                    and float(bar["high"]) >= setup.take_profit_1
-                )
-                hit_tp2 = (
-                    float(bar["high"]) >= setup.take_profit_2
-                )
-            else:
-                hit_stop = (
-                    float(bar["high"]) >= effective_stop
-                )
-                hit_tp1 = (
-                    not position["tp1_hit"]
-                    and setup.take_profit_1_fraction > 0
-                    and float(bar["low"]) <= setup.take_profit_1
-                )
-                hit_tp2 = (
-                    float(bar["low"]) <= setup.take_profit_2
-                )
-
-            if hit_stop:
-                close_position(
-                    bar,
-                    (
-                        min(effective_stop, float(bar["open"]))
-                        if setup.signal == Signal.LONG
-                        else max(effective_stop, float(bar["open"]))
-                    ),
-                    (
-                        "STOP_LOSS_AFTER_TP1"
-                        if position["tp1_hit"]
-                        else "STOP_LOSS"
-                    ),
-                )
-            else:
-                if hit_tp1:
-                    take_tp1()
-
-                if position is not None:
-                    effective_stop = position["effective_stop"]
-                    if setup.signal == Signal.LONG:
-                        stop_after_tp1 = (
-                            position["tp1_hit"]
-                            and float(bar["low"])
-                            <= effective_stop
-                        )
-                    else:
-                        stop_after_tp1 = (
-                            position["tp1_hit"]
-                            and float(bar["high"])
-                            >= effective_stop
-                        )
-
-                    # If a new break-even stop and TP2 are both inside the same
-                    # bar after TP1, use the conservative outcome.
-                    if stop_after_tp1:
-                        close_position(
-                            bar,
-                            effective_stop,
-                            "STOP_LOSS_AFTER_TP1",
-                        )
-                    elif hit_tp2:
-                        close_position(
-                            bar,
-                            setup.take_profit_2,
-                            (
-                                "TAKE_PROFIT_2_AFTER_TP1"
-                                if position["tp1_hit"]
-                                else "TAKE_PROFIT_2"
-                            ),
-                        )
-
+        if position is None and pending is None:
+            return
+        original_position, original_pending, original_equity = deepcopy(position), deepcopy(pending), equity
+        trade_count = len(trades)
+        candidates = []
+        path_position = original_position["setup"] if original_position else None
+        for points in ohlc_paths(bar, original_pending["setup"] if original_pending else None, path_position):
+            position, pending, equity = deepcopy(original_position), deepcopy(original_pending), original_equity
+            del trades[trade_count:]
+            simulate_path(bar, points)
+            mark = equity + (_gross_pnl(position["setup"].signal, position["entry_price"],
+                                      float(bar["close"]), position["remaining_size"]) if position else 0)
+            new_trades = deepcopy(trades[trade_count:])
+            fingerprint = (round(equity, 10), None if position is None else
+                           (position["remaining_size"], position["effective_stop"], position["tp1_hit"]),
+                           tuple((x.exit_reason, round(x.pnl, 10)) for x in new_trades), pending is not None)
+            candidates.append((mark, deepcopy(position), deepcopy(pending), equity, new_trades, fingerprint))
+        ambiguous = len({candidate[-1] for candidate in candidates}) > 1
+        chosen = (min if ambiguity_policy == "conservative" else max)(candidates, key=lambda x: x[0])
+        _, position, pending, equity, new_trades, _ = chosen
+        del trades[trade_count:]
+        if ambiguous:
+            execution_diagnostics["ambiguous_bars"] += 1
+            if position is not None:
+                position["ambiguous_bars"] += 1
+            for trade in new_trades:
+                trade.ambiguous_bars += 1
+        trades.extend(new_trades)
+        if original_pending is not None and pending is None and position is None and not new_trades:
+            execution_diagnostics["pending_cancelled"] += 1
 
     for i in range(start_index, len(prepared)):
         candle = prepared.iloc[i]
@@ -459,14 +454,29 @@ def run_decision_backtest(
                     f"Missing or misaligned {execution_timeframe} execution candles "
                     f"for primary bar {start}."
                 )
+        if execution is not None:
+            aggregate = {"open": float(execution_bars[0]["open"]),
+                         "high": max(float(bar["high"]) for bar in execution_bars),
+                         "low": min(float(bar["low"]) for bar in execution_bars),
+                         "close": float(execution_bars[-1]["close"])}
+            if any(not math.isclose(value, float(candle[key]), rel_tol=1e-7, abs_tol=1e-10)
+                   for key, value in aggregate.items()):
+                raise ValueError(f"Execution OHLC does not aggregate to primary candle {candle['timestamp']}.")
         pending_at_open = pending is not None
         for bar in execution_bars:
             process_execution_bar(bar)
+            mark = equity + (_gross_pnl(position["setup"].signal, position["entry_price"],
+                                      float(bar["close"]), position["remaining_size"]) if position else 0)
+            peak_equity = max(peak_equity, mark)
+            max_drawdown = max(max_drawdown, (peak_equity - mark) / peak_equity if peak_equity else 0)
+            delta = pd.to_timedelta(timeframe_to_milliseconds(execution_timeframe or primary_timeframe), unit="ms")
+            equity_curve.append({"timestamp": pd.Timestamp(bar["timestamp"]) + delta, "equity": mark})
 
         # Pending setups expire after full primary candles, not individual child candles.
         if pending_at_open and pending is not None:
             pending["bars_left"] -= 1
             if pending["bars_left"] <= 0:
+                execution_diagnostics["pending_expired"] += 1
                 pending = None
 
         # Mark-to-market only the still-open quantity.
@@ -487,45 +497,40 @@ def run_decision_backtest(
                 (peak_equity - mark_equity) / peak_equity,
             )
 
-        # Revalidate an unfilled setup only after this candle has closed. That
-        # avoids using future close information to decide an intrabar fill.
-        if position is None and i < len(prepared) - 1:
+        # Observe rearming while a position is open as well as while flat.
+        if i < len(prepared) - 1:
             decision = evaluate_at(i)
-
-            if (
-                pending is not None
-                and not _same_pending_thesis(
-                    pending,
-                    decision,
-                )
-            ):
-                pending = None
-
-            # A thesis is rearmed only after it has genuinely stopped
-            # qualifying. Prevent endless re-entry into the same persistent
-            # EMA/RSI condition immediately after a stop.
             if decision.assessment.status != SetupStatus.CONFIRMED:
                 active_thesis = None
+            if pending is not None:
+                setup = pending["setup"]
+                if setup.event_id:
+                    direction = 1 if setup.signal == Signal.LONG else -1
+                    cancel = setup.cancel_price if setup.cancel_price is not None else setup.stop_loss
+                    context = historical_gates.apply_assessment(pending["assessment"], candle["timestamp"], context_only=True)
+                    regime = decision.structure.regime.value
+                    regime_ok = (regime == "RANGE" if setup.setup_type == "range_reversal" else
+                                 regime == ("BULL_TREND" if direction == 1 else "BEAR_TREND"))
+                    valid = direction * (float(candle["close"]) - cancel) > 0 and regime_ok and context.status == SetupStatus.CONFIRMED
+                else:
+                    valid = _same_pending_thesis(pending, decision)
+                if not valid:
+                    execution_diagnostics["pending_cancelled"] += 1
+                    pending = None
             thesis_key = (decision.assessment.strategy, decision.assessment.signal)
-            if (
-                pending is None
-                and (not effective_dedupe or thesis_key != active_thesis)
-                and decision.assessment.status
-                == SetupStatus.CONFIRMED
-                and decision.setup is not None
-                and (
-                    allow_short
-                    or decision.assessment.signal != Signal.SHORT
-                )
-            ):
+            event_id = getattr(decision.assessment, "event_id", None)
+            new_event = event_id not in seen_events if event_id else (not effective_dedupe or thesis_key != active_thesis)
+            if (position is None and pending is None and new_event
+                    and decision.assessment.status == SetupStatus.CONFIRMED
+                    and decision.setup is not None
+                    and (allow_short or decision.assessment.signal != Signal.SHORT)):
                 active_thesis = thesis_key
-                pending = {
-                    "setup": decision.setup,
-                    "assessment": decision.assessment,
-                    "structure": decision.structure,
-                    "signal_time": candle["timestamp"],
-                    "bars_left": entry_valid_bars,
-                }
+                if event_id:
+                    seen_events.add(event_id)
+                execution_diagnostics["pending_created"] += 1
+                pending = {"setup": decision.setup, "assessment": decision.assessment,
+                           "structure": decision.structure, "signal_time": candle["timestamp"],
+                           "bars_left": entry_valid_bars}
 
     if position is not None:
         candle = prepared.iloc[-1]
@@ -539,6 +544,13 @@ def run_decision_backtest(
             ),
         )
 
+    # Include liquidation fees/slippage at the end-of-data valuation.
+    if equity_curve:
+        equity_curve[-1]["equity"] = equity
+    peak = initial_equity
+    for point in equity_curve:
+        peak = max(peak, point["equity"])
+        max_drawdown = max(max_drawdown, (peak - point["equity"]) / peak if peak else 0)
     trade_df = pd.DataFrame(
         [asdict(trade) for trade in trades]
     )
@@ -562,4 +574,5 @@ def run_decision_backtest(
         profit_factor=profit_factor,
         average_pnl=average_pnl,
         trades=trade_df,
+        execution_diagnostics=execution_diagnostics, equity_curve=equity_curve,
     )

@@ -5,6 +5,7 @@ import pandas as pd
 from trading_bot.analysis.market_structure import MarketStructure
 from trading_bot.core.enums import MarketRegime, Signal, SetupStatus
 from trading_bot.strategies.models import SetupAssessment
+from trading_bot.strategies.events import attach_event
 
 
 STRATEGY_NAME = "range_mean_reversion"
@@ -70,12 +71,22 @@ def evaluate_range_mean_reversion(
     rsi = float(latest["rsi_14"])
     position = (close - support) / width
 
+    if not 0 <= position <= 1:
+        return _no_trade("Close is outside the range; reversal thesis invalid.")
     if position <= 0.30:
         signal = Signal.LONG
     elif position >= 0.70:
         signal = Signal.SHORT
     else:
         return _no_trade("Price is near the middle of the range.")
+
+    rejection = (
+        low <= support + 0.25 * atr and close > open_price and close > support
+        if signal == Signal.LONG else
+        high >= resistance - 0.25 * atr and close < open_price and close < resistance
+    )
+    if not rejection:
+        return _no_trade("A held boundary rejection is mandatory; RSI extremes alone are not entries.")
 
     score = 35
     reasons = [
@@ -136,7 +147,7 @@ def evaluate_range_mean_reversion(
         status = SetupStatus.NO_TRADE
         signal = Signal.NO_TRADE
 
-    return SetupAssessment(
+    assessment = SetupAssessment(
         signal=signal,
         status=status,
         score=score,
@@ -144,3 +155,12 @@ def evaluate_range_mean_reversion(
         reasons=tuple(reasons),
         strategy=STRATEGY_NAME,
     )
+    if status == SetupStatus.NO_TRADE:
+        return assessment
+    direction = 1 if signal == Signal.LONG else -1
+    anchor = support if direction == 1 else resistance
+    extreme = min(support, low) if direction == 1 else max(resistance, high)
+    target = resistance - 0.25 * atr if direction == 1 else support + 0.25 * atr
+    return attach_event(assessment, df, setup_type="range_reversal", anchor=anchor,
+                        invalidation=extreme - direction * 0.25 * atr,
+                        target=target, cancel=anchor)

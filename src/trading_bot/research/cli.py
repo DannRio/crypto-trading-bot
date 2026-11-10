@@ -227,6 +227,7 @@ def _oos(args) -> int:
             data=data,
             train_cutoff=args.train_cutoff,
             validation_cutoff=args.validation_cutoff,
+            primary_timeframe=spec.timeframe,
             **_backtest_kwargs(args),
         )
         summary.insert(0, "strategies", args.strategies)
@@ -273,6 +274,7 @@ def _walk_forward(args) -> int:
             train_bars=args.train_bars,
             test_bars=args.test_bars,
             step_bars=args.step_bars,
+            primary_timeframe=spec.timeframe,
             **_backtest_kwargs(args),
         )
         summary.insert(0, "strategies", args.strategies)
