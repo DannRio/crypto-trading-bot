@@ -862,7 +862,13 @@ def backtest(
         if not quality.valid:
             raise HTTPException(
                 422,
-                "Not enough valid closed candles for backtesting.",
+                "Historical dataset failed validation for "
+                f"{exchange}/{market_type}/{symbol}/{timeframe}: "
+                + "; ".join(quality.issues)
+                + (
+                    f" Source: {source_path}"
+                    if source_path is not None else ""
+                ),
             )
 
         result = run_decision_backtest(
