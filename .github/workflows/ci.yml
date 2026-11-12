@@ -39,3 +39,36 @@ jobs:
             tested-source.tar.gz
             test-results.xml
           retention-days: 7
+
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate deployment configuration
+        run: docker compose --profile paper config --quiet
+      - name: Build packaged application
+        run: docker build --tag crypto-bot:ci .
+      - name: Verify CLI and dashboard
+        run: |
+          docker run --rm crypto-bot:ci crypto-engine --help
+          docker run --rm crypto-bot:ci crypto-paper daemon --help
+          docker run --rm crypto-bot:ci crypto-research universe --help
+          docker run --detach --name crypto-dashboard --publish 127.0.0.1:8000:8000 crypto-bot:ci
+          python - <<'PY'
+          import json, time, urllib.request
+          for attempt in range(30):
+              try:
+                  with urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2) as response:
+                      assert json.load(response)['live_execution'] is False
+                  break
+              except OSError:
+                  time.sleep(1)
+          else:
+              raise SystemExit('Dashboard did not become healthy')
+          with urllib.request.urlopen('http://127.0.0.1:8000/api/profiles') as response:
+              assert len(json.load(response)['profiles']) == 3
+          PY
+      - name: Container logs
+        if: always()
+        run: docker logs crypto-dashboard || true
