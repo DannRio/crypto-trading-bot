@@ -6,7 +6,8 @@ from trading_bot.core.candle_execution import replay_price_path, economic_break_
 
 import pandas as pd
 
-from trading_bot.analysis import add_indicators
+from trading_bot.analysis import decision_indicators
+from trading_bot.config import INDICATOR_WINDOW
 from trading_bot.backtesting.metrics import (
     calculate_return_pct,
     calculate_trade_metrics,
@@ -82,7 +83,7 @@ def run_decision_backtest(
     slippage_bps: float = 5.0,
     warmup_candles: int = 220,
     entry_valid_bars: int = 3,
-    decision_lookback: int = 250,
+    decision_lookback: int = INDICATOR_WINDOW,
     allow_short: bool = True,
     strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES,
     strategy_parameters: dict[str, dict] | None = None,
@@ -119,8 +120,8 @@ def run_decision_backtest(
         raise ValueError("initial_equity must be positive.")
     if entry_valid_bars <= 0:
         raise ValueError("entry_valid_bars must be positive.")
-    if decision_lookback < 21:
-        raise ValueError("decision_lookback must be at least 21 candles.")
+    if type(decision_lookback) is not int or decision_lookback < 21:
+        raise ValueError("decision_lookback must be an integer of at least 21 candles.")
 
     historical_gates = HistoricalTimeframeGates(
         primary_timeframe=primary_timeframe,
@@ -128,7 +129,7 @@ def run_decision_backtest(
         confirmation_timeframes=confirmation_timeframes,
         entry_timeframe=entry_timeframe,
     )
-    prepared = add_indicators(data.copy())
+    prepared = data.copy()
     execution = None
     execution_times = None
     primary_delta = pd.to_timedelta(
@@ -166,9 +167,9 @@ def run_decision_backtest(
     start_index = max(warmup_candles, 1)
 
     def evaluate_at(index: int):
-        history = prepared.iloc[
+        history = decision_indicators(prepared.iloc[
             max(0, index - decision_lookback + 1): index + 1
-        ]
+        ], window=decision_lookback)
         decision = DecisionEngine(
             account_equity=equity,
             risk_percent=risk_percent,
@@ -337,7 +338,7 @@ def run_decision_backtest(
     def update_excursion(price):
         if position is None:
             return
-        distance = abs(position["entry_price"] - position["setup"].stop_loss)
+        distance = position["initial_risk_amount"] / position["initial_size"]
         direction = 1 if position["setup"].signal == Signal.LONG else -1
         excursion = direction * (price - position["entry_price"]) / distance if distance else 0
         position["mfe_r"] = max(position["mfe_r"], excursion)
@@ -353,9 +354,12 @@ def run_decision_backtest(
             pending = None
             return
         size = setup.position_size
+        stop_fill = _exit_with_slippage(setup.stop_loss, setup.signal, slippage_bps)
+        loss_per_unit = direction * (executed_entry - stop_fill) + fee_rate * (executed_entry + stop_fill)
+        if not math.isfinite(loss_per_unit) or loss_per_unit <= 0:
+            pending = None
+            return
         if cost_aware_sizing:
-            stop_fill = _exit_with_slippage(setup.stop_loss, setup.signal, slippage_bps)
-            loss_per_unit = direction * (executed_entry - stop_fill) + fee_rate * (executed_entry + stop_fill)
             size = min(size, setup.target_risk_amount / loss_per_unit,
                        equity / (executed_entry * (1 + fee_rate)))
         if size <= 0:
@@ -366,7 +370,7 @@ def run_decision_backtest(
         position = {
             "setup": setup, "entry_price": executed_entry,
             "initial_size": size, "remaining_size": size,
-            "initial_risk_amount": abs(executed_entry - setup.stop_loss) * size,
+            "initial_risk_amount": loss_per_unit * size,
             "signal_time": pending["signal_time"], "entry_time": bar["timestamp"],
             "entry_fee": entry_fee, "entry_slippage_cost": abs(executed_entry - raw_entry) * size,
             "realized_exit_slippage_cost": 0.0, "score": pending["assessment"].score,

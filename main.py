@@ -1,4 +1,4 @@
-from trading_bot.cli import main
+from trading_bot.entry import main
 
 
 if __name__ == "__main__":

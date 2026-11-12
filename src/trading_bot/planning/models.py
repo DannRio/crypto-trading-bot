@@ -11,6 +11,7 @@ class TradePlanConfig:
     entry_zone_atr: float = 0.25
     max_structure_stop_atr: float = 3.0
     max_notional_percent: float = 1.0
+    max_notional_value: float | None = None
     reward_to_risk_1: float = 1.0
     reward_to_risk_2: float = 2.0
     take_profit_1_fraction: float = 0.5
@@ -18,6 +19,7 @@ class TradePlanConfig:
 
     target_mode: str = "auto"
     min_target_net_rr: float = 1.0
+    min_blended_net_rr: float = 0.0
     break_even_mode: str = "cost"
 
     def __post_init__(self):
@@ -40,6 +42,12 @@ class TradePlanConfig:
                 "Trade-plan parameters must be positive: "
                 + ", ".join(invalid)
             )
+        if self.max_notional_value is not None and (
+            not math.isfinite(self.max_notional_value) or self.max_notional_value <= 0
+        ):
+            raise ValueError("max_notional_value must be finite and positive when supplied.")
+        if not math.isfinite(self.min_blended_net_rr) or self.min_blended_net_rr < 0:
+            raise ValueError("min_blended_net_rr must be finite and non-negative.")
         if self.target_mode not in {"auto", "fixed_r"}:
             raise ValueError("target_mode must be auto or fixed_r.")
         if self.break_even_mode not in {"price", "cost"}:
@@ -83,3 +91,6 @@ class TradeSetup:
     event_time: str | None = None
     break_even_mode: str = "cost"
     net_reward_to_risk: float | None = None
+    reference_price_risk_amount: float | None = None
+    estimated_loss_at_stop: float | None = None
+    blended_target_net_reward_to_risk: float | None = None

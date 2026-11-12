@@ -1,9 +1,10 @@
-"""Local research and dry-run assisted-trading API.
+"""Local analysis, historical validation, and one controlled paper account.
 
 No authenticated exchange access, private keys, or live order placement.
 Bind locally (127.0.0.1); this development API has no user authentication.
 """
 from dataclasses import asdict, is_dataclass
+from contextlib import asynccontextmanager
 from enum import Enum
 from functools import lru_cache
 import json
@@ -14,8 +15,9 @@ from pathlib import Path
 import re
 from typing import Literal
 from uuid import UUID
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
@@ -23,27 +25,23 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 
 from trading_bot.analysis.service import AnalysisRequest, CoinAnalysisService
+from trading_bot.analysis.journal import AnalysisJournal
 
-from trading_bot.assisted import (
-    AssistedTradingService,
-    IntentStatus,
-    IntentStore,
-)
 from trading_bot.backtesting import run_decision_backtest
-from trading_bot.config import builtin_profiles
+from trading_bot.config import builtin_profiles, operator_policy, INDICATOR_WINDOW
+from trading_bot.paper.runtime import BotSettings, PaperRuntime, RuntimeConflict
+from trading_bot.research.jobs import HistoryJobs, HistoryRequest, HistoryJobConflict
+from trading_bot.planning import TradePlanConfig
 from trading_bot.research.diagnostics import trade_diagnostics
 from trading_bot.research.exit_ablation import run_exit_ablation
 from trading_bot.research.evaluation import run_out_of_sample_evaluation
-from trading_bot.execution import (
-    LiveExecutionGuard,
-    ManagedDryRunBrokerAdapter,
-    OrderStore,
-)
 from trading_bot.data import (
     HistoricalDataStore,
     get_ohlcv,
     validate_ohlcv,
+    timeframe_to_milliseconds,
 )
+from trading_bot.data.validation import latest_expected_close
 from trading_bot.paper import PaperJournal
 from trading_bot.scanner import (
     DynamicMarketUniverse,
@@ -54,7 +52,18 @@ from trading_bot.strategies import normalize_strategy_names
 from trading_bot.scanner.multi_timeframe import validate_confirmation_timeframes, validate_entry_timeframe
 
 log = logging.getLogger(__name__)
-app = FastAPI(title="Trading Bot — Research & Assisted Dashboard", version="0.18.0")
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    yield
+    if getattr(_bot_runtime, "cache_info", lambda: None)() and _bot_runtime.cache_info().currsize:
+        _bot_runtime().shutdown(timeout=15)
+    if getattr(_history_jobs, "cache_info", lambda: None)() and _history_jobs.cache_info().currsize:
+        _history_jobs().shutdown(timeout=2)
+
+
+app = FastAPI(title="Trading Bot — Core Paper Release", version="0.19.0", lifespan=lifespan)
 
 EXCHANGES = {"kraken", "kucoin", "binance", "bybit", "okx", "coinbase"}
 MARKET_TYPES = {"spot", "swap", "future"}
@@ -62,7 +71,8 @@ TIMEFRAMES = {"5m", "15m", "1h", "4h", "1d"}
 SYMBOL_RE = re.compile(r"^[A-Z0-9._-]+/[A-Z0-9._-]+(?::[A-Z0-9._-]+)?$")
 PAGE = Path(__file__).with_name("index.html")
 COIN_PAGE = Path(__file__).with_name("coin.html")
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROJECT_ROOT = Path(os.getenv("TRADING_DATA_DIR", str(Path.cwd() / "data"))).expanduser().resolve().parent
+DATA_ROOT = Path(os.getenv("TRADING_DATA_DIR", str(Path.cwd() / "data"))).expanduser().resolve()
 
 
 def _project_path(
@@ -80,55 +90,13 @@ def _project_path(
 
 HISTORY_ROOT = _project_path(
     "TRADING_HISTORY_ROOT",
-    "data/history",
+    str(DATA_ROOT / "history"),
 )
-PAPER_JOURNAL_PATH = Path(
-    os.getenv(
-        "TRADING_PAPER_JOURNAL",
-        "data/paper/continuous_paper.db",
-    )
-)
-ASSISTED_DB_PATH = Path(
-    os.getenv(
-        "TRADING_ASSISTED_DB",
-        "data/assisted/assisted.db",
-    )
-)
-ORDER_DB_PATH = Path(
-    os.getenv(
-        "TRADING_ORDER_DB",
-        "data/orders/orders.db",
-    )
-)
-LIVE_ORDER_DB_PATH = Path(
-    os.getenv(
-        "TRADING_LIVE_ORDER_DB",
-        "data/orders/live_orders.db",
-    )
-)
+PAPER_JOURNAL_PATH = _project_path("TRADING_PAPER_JOURNAL", str(DATA_ROOT / "paper" / "core_paper.db"))
 
 
-class StageIntentRequest(BaseModel):
-    exchange: str = "kraken"
-    market_type: str = "spot"
-    symbol: str
-    timeframe: str = "1h"
-    confirm_timeframes: list[str] = Field(default_factory=list)
-    entry_timeframe: str | None = None
-    limit: int = 500
-    equity: float = 10_000
-    risk_percent: float = 1.0
-    min_score: int = 70
-    fee_rate: float = Field(0.001, ge=0, le=0.05)
-    slippage_bps: float = Field(5.0, ge=0, le=500)
-    strategies: list[str] = Field(
-        default_factory=lambda: ["trend_continuation"]
-    )
 
 
-class IntentDecisionRequest(BaseModel):
-    actor: str
-    note: str = ""
 
 
 class CoinAnalysisRequest(BaseModel):
@@ -143,17 +111,115 @@ class CoinAnalysisRequest(BaseModel):
     notional: float = Field(1_000, ge=1, le=1e8)
     fee_rate: float = Field(0.001, ge=0, le=0.05)
     slippage_bps: float = Field(5, ge=0, le=500)
-    include_fundamentals: bool = True
+    include_fundamentals: bool = False
+
+
+class BotStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, strict=True)
+    exchange: Literal["kucoin", "kraken", "binance", "bybit", "okx", "coinbase"] = "kucoin"
+    quote: Literal["USD", "USDT", "USDC"] = "USDT"
+    symbols: list[str] = Field(default_factory=list, max_length=30)
+    max_markets: int = Field(10, ge=1, le=30)
+    equity: float = Field(10_000, ge=1, le=1e9)
+    risk_percent: float = Field(.25, ge=.01, le=5)
+    notional: float = Field(1_000, ge=1, le=1e8)
+    fee_rate: float = Field(.001, ge=0, le=.05)
+    slippage_bps: float = Field(5, ge=0, le=500)
+
+
+class HistoryPrepareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    exchange: Literal["kucoin", "kraken", "binance", "bybit", "okx", "coinbase"]
+    market_type: Literal["spot", "swap"] = "spot"
+    symbol: str = Field(min_length=3, max_length=50)
+    start: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+@lru_cache(maxsize=1)
+def _bot_runtime():
+    return PaperRuntime(PAPER_JOURNAL_PATH)
+
+
+@lru_cache(maxsize=1)
+def _history_jobs():
+    return HistoryJobs(HISTORY_ROOT)
+
+
+def _same_origin(request: Request):
+    origin = request.headers.get("origin")
+    if origin:
+        parsed = urlsplit(origin)
+        if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != request.headers.get("host", "").lower():
+            raise HTTPException(403, "Use the local dashboard origin for this operation.")
+
+
+@app.get("/api/bot/status")
+def bot_status(limit: int = Query(20, ge=1, le=100)):
+    runtime = _bot_runtime().status()
+    paper = paper_status(limit=limit)
+    if runtime.get("active") and runtime.get("owner") == "this_dashboard" and runtime.get("account") is not None:
+        paper["account"] = runtime["account"]
+    return {"runtime": runtime, "paper": paper,
+            "capabilities": {"mode": "paper", "live_orders": False, "market_type": "spot"}}
+
+
+@app.post("/api/bot/start", status_code=202)
+def bot_start(payload: BotStartRequest, request: Request):
+    _same_origin(request)
+    try:
+        settings = BotSettings(**payload.model_dump())
+        runtime = _bot_runtime().start(settings)
+    except RuntimeConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"runtime": runtime, "capabilities": {"mode": "paper", "live_orders": False}}
+
+
+@app.post("/api/bot/stop", status_code=202)
+def bot_stop(request: Request):
+    _same_origin(request)
+    try:
+        runtime = _bot_runtime().stop()
+    except RuntimeConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"runtime": runtime, "capabilities": {"mode": "paper", "live_orders": False}}
+
+
+@app.post("/api/history/prepare", status_code=202)
+def prepare_history(payload: HistoryPrepareRequest, request: Request):
+    _same_origin(request)
+    try:
+        parameters = HistoryRequest(**payload.model_dump())
+        return _history_jobs().start(parameters)
+    except HistoryJobConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/api/history/jobs/{job_id}")
+def history_job(job_id: str):
+    try:
+        canonical = str(UUID(job_id))
+    except ValueError as exc:
+        raise HTTPException(422, "A valid history job ID is required.") from exc
+    result = _history_jobs().get(canonical)
+    if result is None:
+        raise HTTPException(404, "History job not found. Jobs from a previous server session must be prepared again.")
+    return result
 
 
 @lru_cache(maxsize=1)
 def _analysis_service():
-    return CoinAnalysisService()
+    path = _project_path("TRADING_ANALYSIS_DB", str(DATA_ROOT / "analysis" / "reports.db"))
+    return CoinAnalysisService(journal=AnalysisJournal(path))
 
 
 @app.exception_handler(RequestValidationError)
 async def analysis_validation_error(request, exc):
-    if request.url.path == "/api/analyze":
+    if request.url.path in {"/api/analyze", "/api/bot/start", "/api/history/prepare"}:
         # Strict JSON errors must not echo NaN/Infinity or unexpected secret
         # fields supplied by a caller. Preserve existing route behavior.
         return JSONResponse(status_code=422, content={"detail": [
@@ -337,7 +403,10 @@ def index():
 
 @app.get("/api/health")
 def health():
-    return {"mode": "READ_ONLY", "live_execution": False, "paper_execution": False}
+    runtime = _bot_runtime().status()
+    return {"mode": "PAPER_BOT", "live_execution": False,
+            "paper_execution": runtime["active"], "worker_state": runtime["state"],
+            "worker_health": runtime["health"], "worker_owner": runtime["owner"]}
 
 
 @app.get("/api/profiles")
@@ -359,7 +428,15 @@ def _metadata_json(metadata: dict, key: str) -> dict:
 def paper_status(
     limit: int = Query(20, ge=1, le=100),
 ):
-    journal = PaperJournal(PAPER_JOURNAL_PATH)
+    if not Path(PAPER_JOURNAL_PATH).is_file():
+        return {"status": "not_started", "journal": str(PAPER_JOURNAL_PATH), "metadata": {},
+                "universe": {}, "heartbeat": {}, "summary": {"pending_orders": 0,
+                "open_positions": 0, "realized_net_pnl": 0}, "active_orders": [],
+                "recent_trades": [], "checkpoints": [], "recent_signals": [], "risk_state": None}
+    try:
+        journal = PaperJournal.open_readonly(PAPER_JOURNAL_PATH)
+    except Exception as exc:
+        raise HTTPException(503, "The saved paper account is unavailable; no account was created or reset.") from exc
     try:
         active = journal.active_orders()
         all_trades = journal.all_trades()
@@ -386,6 +463,7 @@ def paper_status(
         )
 
         return {
+            "status": "available",
             "journal": str(PAPER_JOURNAL_PATH),
             "metadata": metadata,
             "universe": _metadata_json(metadata, "universe_status"),
@@ -409,6 +487,8 @@ def paper_status(
             ),
             "risk_state": _safe(risk_state),
         }
+    except Exception as exc:
+        raise HTTPException(503, "The saved paper account could not be read; no account was created or reset.") from exc
     finally:
         journal.close()
 
@@ -573,286 +653,41 @@ def scan(
 
 
 
-@app.get("/api/assisted/intents")
-def assisted_intents(
-    status: str | None = Query(None),
-    limit: int = Query(50, ge=1, le=200),
-):
-    store = IntentStore(ASSISTED_DB_PATH)
-    try:
-        statuses = None
-        if status:
-            try:
-                statuses = (IntentStatus(status.upper()),)
-            except ValueError as exc:
-                raise HTTPException(
-                    422,
-                    "Unsupported assisted intent status.",
-                ) from exc
-
-        intents = store.list(
-            statuses=statuses,
-            limit=limit,
-        )
-        return {
-            "mode": "DRY_RUN",
-            "live_execution": False,
-            "database": str(ASSISTED_DB_PATH),
-            "intents": _safe(intents),
-            "decisions": _safe(
-                store.decisions(limit=limit)
-            ),
-            "receipts": _safe(
-                store.execution_receipts(limit=limit)
-            ),
-        }
-    finally:
-        store.close()
 
 
 
 
-@app.post("/api/assisted/stage")
-def assisted_stage(request: StageIntentRequest):
-    _validate_exchange(
-        request.exchange,
-        request.market_type,
-        request.timeframe,
-    )
-    symbol = _validate_symbol(request.symbol)
-
-    if not 250 <= request.limit <= 1000:
-        raise HTTPException(422, "limit must be between 250 and 1000.")
-    if not 0 < request.equity <= 100_000_000:
-        raise HTTPException(422, "equity must be positive.")
-    if not 0 < request.risk_percent <= 5:
-        raise HTTPException(
-            422,
-            "risk_percent must be greater than 0 and <= 5.",
-        )
-    if not 0 <= request.min_score <= 100:
-        raise HTTPException(
-            422,
-            "min_score must be between 0 and 100.",
-        )
-
-    confirmation_timeframes = tuple(
-        value.strip()
-        for value in request.confirm_timeframes
-        if value.strip()
-    )
-    unsupported = [
-        value
-        for value in confirmation_timeframes
-        if value not in TIMEFRAMES
-    ]
-    if unsupported:
-        raise HTTPException(
-            422,
-            "Unsupported confirmation timeframe: "
-            + ", ".join(unsupported),
-        )
-
-    entry_timeframe = (
-        request.entry_timeframe.strip()
-        if request.entry_timeframe
-        else None
-    )
-    if entry_timeframe and entry_timeframe not in TIMEFRAMES:
-        raise HTTPException(422, "Unsupported entry timeframe.")
-
-    try:
-        strategy_names = normalize_strategy_names(
-            tuple(request.strategies)
-        )
-        scanner = MarketScanner(
-            exchange_id=request.exchange,
-            market_type=request.market_type,
-            timeframe=request.timeframe,
-            confirmation_timeframes=confirmation_timeframes,
-            entry_timeframe=entry_timeframe,
-            candle_limit=request.limit,
-            account_equity=request.equity,
-            risk_percent=request.risk_percent / 100,
-            min_confirmed_score=request.min_score,
-            strategy_names=strategy_names,
-            fee_rate=request.fee_rate,
-            slippage_bps=request.slippage_bps,
-        )
-        result = scanner.scan_symbol(symbol)
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    except Exception as exc:
-        log.exception("Assisted staging scan failed")
-        raise HTTPException(
-            502,
-            "Could not evaluate the requested market.",
-        ) from exc
-
-    store = IntentStore(ASSISTED_DB_PATH)
-    try:
-        service = AssistedTradingService(store)
-        try:
-            intent = service.build_intent(result)
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
-
-        created = store.queue(intent)
-        if not created:
-            existing = store.get_by_fingerprint(
-                intent.fingerprint
-            )
-            if existing is None:
-                raise HTTPException(
-                    409,
-                    "Matching intent already exists.",
-                )
-            intent = existing
-
-        return {
-            "created": created,
-            "mode": "DRY_RUN",
-            "live_execution": False,
-            "intent": _safe(intent),
-        }
-    finally:
-        store.close()
 
 
 
 
-@app.post("/api/assisted/{intent_id}/approve")
-def assisted_approve(
-    intent_id: str,
-    request: IntentDecisionRequest,
-):
-    if not request.actor.strip():
-        raise HTTPException(422, "Decision actor is required.")
-
-    store = IntentStore(ASSISTED_DB_PATH)
-    order_store = OrderStore(ORDER_DB_PATH)
-    try:
-        broker = ManagedDryRunBrokerAdapter(
-            order_store
-        )
-        service = AssistedTradingService(
-            store,
-            broker=broker,
-        )
-        try:
-            intent, receipt = service.approve(
-                intent_id,
-                actor=request.actor,
-                note=request.note,
-                execute=True,
-            )
-        except KeyError as exc:
-            raise HTTPException(404, str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
-
-        return {
-            "mode": "MANAGED_DRY_RUN",
-            "live_execution": False,
-            "intent": _safe(intent),
-            "receipt": _safe(receipt),
-        }
-    finally:
-        order_store.close()
-        store.close()
-
-
-@app.post("/api/assisted/{intent_id}/reject")
-def assisted_reject(
-    intent_id: str,
-    request: IntentDecisionRequest,
-):
-    if not request.actor.strip():
-        raise HTTPException(422, "Decision actor is required.")
-
-    store = IntentStore(ASSISTED_DB_PATH)
-    try:
-        service = AssistedTradingService(store)
-        try:
-            intent = service.reject(
-                intent_id,
-                actor=request.actor,
-                note=request.note,
-            )
-        except KeyError as exc:
-            raise HTTPException(404, str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
-
-        return {
-            "mode": "DRY_RUN",
-            "live_execution": False,
-            "intent": _safe(intent),
-        }
-    finally:
-        store.close()
 
 
 
 
-@app.get("/api/execution/status")
-def execution_status():
-    store = OrderStore(LIVE_ORDER_DB_PATH)
-    try:
-        guard = LiveExecutionGuard(store)
-        state = guard.status()
-        return {
-            "mode": "LIVE_OPERATOR_CLI_ONLY",
-            "web_live_submission": False,
-            "database": str(LIVE_ORDER_DB_PATH),
-            "environment_enabled": (
-                guard.environment_enabled
-            ),
-            "context": _safe(
-                store.load_execution_context()
-            ),
-            "control": _safe(state),
-            "active_orders": _safe(
-                store.active_orders()
-            ),
-        }
-    finally:
-        store.close()
 
 
-@app.get("/api/orders/status")
-def order_status(
-    limit: int = Query(50, ge=1, le=200),
-):
-    store = OrderStore(ORDER_DB_PATH)
-    try:
-        orders = store.list_orders(limit=limit)
-        return {
-            "mode": "MANAGED_DRY_RUN",
-            "live_execution": False,
-            "database": str(ORDER_DB_PATH),
-            "orders": _safe(orders),
-        }
-    finally:
-        store.close()
+
+
 
 
 @app.get("/api/backtest")
 def backtest(
-    exchange: str = Query("kraken"),
+    exchange: str = Query("kucoin"),
     market_type: str = Query("spot"),
-    symbol: str = Query("BTC/USD", max_length=50),
+    symbol: str = Query("BTC/USDT", max_length=50),
     timeframe: str = Query("1h"),
     data_source: str = Query("local", pattern="^(local|live)$"),
     start: str | None = Query(None, max_length=32),
     end: str | None = Query(None, max_length=32),
     limit: int = Query(720, ge=250, le=1000),
-    equity: float = Query(10000.0, gt=0, le=100_000_000),
-    risk_percent: float = Query(1.0, gt=0, le=5),
+    equity: float = Query(10000.0, ge=1, le=1e9),
+    risk_percent: float = Query(.25, ge=.01, le=5),
+    notional: float = Query(1000.0, ge=1, le=1e8),
     min_score: int = Query(70, ge=0, le=100),
-    strategies: str = Query("trend_continuation", max_length=200),
-    confirm_timeframes: str = Query("", max_length=100),
-    entry_timeframe: str = Query("", max_length=20),
+    strategies: str = Query("trend_continuation_v2", max_length=200),
+    confirm_timeframes: str = Query("4h", max_length=100),
+    entry_timeframe: str = Query("15m", max_length=20),
     execution_timeframe: str = Query("", max_length=20),
     compare_exits: bool = Query(False),
     validate_oos: bool = Query(False),
@@ -865,6 +700,13 @@ def backtest(
     htf = _parse_timeframes(confirm_timeframes)
     ltf = entry_timeframe.strip() or None
     execution_tf = execution_timeframe.strip() or None
+    try:
+        policy = operator_policy(equity=equity, risk_percent=risk_percent,
+            notional=notional, fee_rate=fee_rate, slippage_bps=slippage_bps)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    plan_config = TradePlanConfig(max_notional_value=notional, max_notional_percent=1.0,
+        min_target_net_rr=1.0, min_blended_net_rr=1.0)
     from trading_bot.scanner.multi_timeframe import (
         validate_confirmation_timeframes,
         validate_entry_timeframe,
@@ -886,6 +728,8 @@ def backtest(
 
     try:
         secondary_data = {}
+        warmup = INDICATOR_WINDOW
+        requested_end_boundary = None
         if data_source == "local":
             store, dataset_path, checked_paths = (
                 _history_store_for_dataset(
@@ -919,17 +763,8 @@ def backtest(
                 utc=True,
             )
 
-            if start:
-                start_ts = pd.Timestamp(start)
-                start_ts = (
-                    start_ts.tz_localize("UTC")
-                    if start_ts.tzinfo is None
-                    else start_ts.tz_convert("UTC")
-                )
-                filtered = filtered[
-                    filtered["timestamp"] >= start_ts
-                ]
-
+            # Saved data may include today's open bar. Never evaluate it.
+            filtered = filtered[filtered["timestamp"] < latest_expected_close(pd.Timestamp.now(tz="UTC"), timeframe)]
             if end:
                 end_ts = pd.Timestamp(end)
                 end_ts = (
@@ -940,9 +775,23 @@ def backtest(
                 # A date-only end value includes the full selected day.
                 if len(end) == 10:
                     end_ts = end_ts + pd.Timedelta(days=1)
+                closure_timeframe = max((timeframe, *htf), key=timeframe_to_milliseconds)
+                requested_end_boundary = latest_expected_close(
+                    min(end_ts, pd.Timestamp.now(tz="UTC")), closure_timeframe)
                 filtered = filtered[
-                    filtered["timestamp"] < end_ts
+                    filtered["timestamp"] < requested_end_boundary
                 ]
+
+            if start:
+                start_ts = pd.Timestamp(start)
+                start_ts = start_ts.tz_localize("UTC") if start_ts.tzinfo is None else start_ts.tz_convert("UTC")
+                prefix = filtered[filtered["timestamp"] < start_ts].tail(INDICATOR_WINDOW)
+                selected = filtered[filtered["timestamp"] >= start_ts]
+                if len(prefix) < INDICATOR_WINDOW:
+                    raise HTTPException(422, f"The requested period needs {INDICATOR_WINDOW} earlier {timeframe} candles for indicator warmup. Prepare history first.")
+                if selected.empty:
+                    raise HTTPException(422, "No closed candles fall in the selected evaluation period.")
+                filtered = pd.concat([prefix, selected], ignore_index=True)
 
             closed = filtered.reset_index(drop=True)
             source_path = str(dataset_path)
@@ -976,19 +825,41 @@ def backtest(
         quality = validate_ohlcv(
             closed,
             timeframe=timeframe,
-            min_rows=220,
+            min_rows=INDICATOR_WINDOW + 1,
         )
-        if not quality.valid:
+        if not quality.valid or quality.missing_intervals:
             raise HTTPException(
                 422,
                 "Historical dataset failed validation for "
                 f"{exchange}/{market_type}/{symbol}/{timeframe}: "
-                + "; ".join(quality.issues)
+                + "; ".join(quality.issues + quality.warnings)
                 + (
                     f" Source: {source_path}"
                     if source_path is not None else ""
                 ),
             )
+
+        if validate_oos and len(closed) < 1500:
+            raise HTTPException(422, "At least 1500 historical candles required for train/validation/test.")
+        primary_delta = pd.to_timedelta(timeframe_to_milliseconds(timeframe), unit="ms")
+        evaluation_start = pd.Timestamp(closed["timestamp"].iloc[warmup])
+        evaluation_end = pd.Timestamp(closed["timestamp"].iloc[-1]) + primary_delta
+        if requested_end_boundary is not None and evaluation_end != requested_end_boundary:
+            raise HTTPException(422, "The primary dataset ends before the requested closed-candle period. Prepare complete matching history first.")
+        for extra_timeframe, extra_candles in tuple(secondary_data.items()):
+            delta = pd.to_timedelta(timeframe_to_milliseconds(extra_timeframe), unit="ms")
+            first_close = latest_expected_close(evaluation_start + primary_delta, extra_timeframe)
+            required_start = (first_close - INDICATOR_WINDOW * delta
+                              if extra_timeframe in (*htf, ltf) else evaluation_start)
+            required_end = latest_expected_close(evaluation_end, extra_timeframe)
+            times = pd.to_datetime(extra_candles["timestamp"], utc=True)
+            relevant = extra_candles[(times >= required_start) & (times < required_end)].reset_index(drop=True)
+            check = validate_ohlcv(relevant, timeframe=extra_timeframe, min_rows=1)
+            if (not check.valid or check.missing_intervals or relevant.empty
+                    or pd.Timestamp(relevant["timestamp"].iloc[0]) != required_start
+                    or pd.Timestamp(relevant["timestamp"].iloc[-1]) + delta != required_end):
+                raise HTTPException(422, f"The {extra_timeframe} dataset does not cover the complete evaluation period and {INDICATOR_WINDOW}-candle warmup. Prepare matching history first.")
+            secondary_data[extra_timeframe] = relevant
 
         result = run_decision_backtest(
             closed,
@@ -1004,6 +875,9 @@ def backtest(
             entry_timeframe=ltf,
             secondary_data=secondary_data,
             execution_timeframe=execution_tf,
+            warmup_candles=warmup,
+            decision_lookback=INDICATOR_WINDOW,
+            trade_plan_config=plan_config,
         )
     except HTTPException:
         raise
@@ -1035,6 +909,9 @@ def backtest(
             entry_timeframe=ltf,
             execution_timeframe=execution_tf,
             secondary_data=secondary_data,
+            warmup_candles=warmup,
+            decision_lookback=INDICATOR_WINDOW,
+            config=plan_config,
         )
         exit_ablation = _safe(exit_ablation_frame.to_dict("records"))
 
@@ -1062,6 +939,9 @@ def backtest(
             entry_timeframe=ltf,
             execution_timeframe=execution_tf,
             secondary_data=secondary_data,
+            warmup_candles=warmup,
+            decision_lookback=INDICATOR_WINDOW,
+            trade_plan_config=plan_config,
         )
         oos_summary = _safe(oos_frame.to_dict("records"))
 
@@ -1086,6 +966,16 @@ def backtest(
         "data_rows": len(closed),
         "data_start": _safe(data_start),
         "data_end": _safe(data_end),
+        "evaluation_start": _safe(evaluation_start),
+        "evaluation_end": _safe(evaluation_end),
+        "evaluation_rows": len(closed) - warmup,
+        "warmup_candles": warmup,
+        "policy": policy if (strategy_names == ("trend_continuation_v2",)
+            and timeframe == "1h" and htf == ("4h",) and ltf == "15m"
+            and min_score == 70 and execution_tf is None) else None,
+        "research_variant": not (strategy_names == ("trend_continuation_v2",)
+            and timeframe == "1h" and htf == ("4h",) and ltf == "15m"
+            and min_score == 70 and execution_tf is None),
         "strategies": list(strategy_names),
         "confirmation_timeframes": list(htf),
         "entry_timeframe": ltf,
@@ -1094,6 +984,11 @@ def backtest(
             "fee_rate_per_side": fee_rate,
             "slippage_bps_per_side": slippage_bps,
             "min_score": min_score,
+            "indicator_window": INDICATOR_WINDOW,
+            "risk_percent": risk_percent,
+            "notional_cap": notional,
+            "liquidity_replay": False,
+            "portfolio_risk_replay": False,
             "single_timeframe_only": not bool(htf or ltf or execution_tf),
         },
         "metrics": _safe({
@@ -1115,7 +1010,7 @@ def backtest(
         "exit_ablation": exit_ablation,
         "chronological_validation": oos_summary,
         "warning": (
-            "Historical MTF confirmation is as-of closed candles. Intrabar "
+            "This single-market historical test shares the signal policy; it does not replay live order-book checks or multi-market portfolio limits. Historical MTF confirmation is as-of closed candles. Intrabar "
             "fills are resolved with lower timeframe OHLC when an execution "
             "timeframe is selected; events inside each child candle remain "
             "ambiguous and are resolved conservatively."

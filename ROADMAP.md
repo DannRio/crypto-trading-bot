@@ -1,129 +1,43 @@
-# Crypto Trading Decision & Research Engine
+# Release status and remaining evidence
 
-## Phase 1 — Foundation
-- [x] Professional project structure
-- [x] Shared models and enums
-- [x] Existing tests migrated
-- [x] Existing prototype migrated without regression
-- [x] CLI entry point
-- [x] Read-only web dashboard
-- [x] Central configuration profiles shared by scanner, dashboard and paper daemon
+## Supported v0.19 product
 
-## Phase 2 — Market Data
-- [x] Historical bulk-data loader
-- [x] OHLCV validation
-- [x] Missing candle detection
-- [x] Duplicate detection
-- [x] Timestamp normalization
-- [x] Multi-exchange data interface
-- [x] Dynamic liquid-market universe
-- [x] Listing refresh, bounded ticker fallback, unique-base coverage and strict closed-history preflight
-- [x] Shared public exchange clients and rate limiting
+- One `crypto-bot` launcher and local paper-account dashboard.
+- One core spot policy: trend continuation v2, 4h/1h/15m and trailing 400 closed-candle indicators.
+- Public market discovery, exact watchlists, liquidity checks and conditional cost-sized plans.
+- Durable paper entries/exits, partial exits, effective stops, portfolio risk limits and explicit start/stop.
+- Exclusive account writer, atomic order/trade/checkpoint transitions and restart reconciliation.
+- Coin analysis with charts, expiring evidence, optional fundamental context and immutable reports.
+- Explicit historical preparation with warmup/continuity validation, historical tests and advanced research tools.
+- Packaged local/container startup, deterministic lifecycle acceptance, Windows ownership tests and browser checks.
 
-## Phase 3 — Market Analysis
-- [x] EMA
-- [x] RSI
-- [x] ATR
-- [x] Volume analysis
-- [x] Support/resistance
-- [x] Basic market structure
-- [x] Trend/range regime detection
-- [x] Higher-timeframe regime confirmation
+These are implemented capabilities. Test coverage establishes defined software behavior on supplied fixtures; it does not establish a profitable strategy or successful trading on a particular account.
 
-## Phase 4 — Strategy Engine
-- [x] LONG / SHORT / NO_TRADE baseline
-- [x] Trend-continuation setup scoring
-- [x] Setup validation rules
-- [x] Configurable strategy registry
-- [x] Breakout/retest strategy candidate
-- [x] Range/mean-reversion strategy candidate
+## Removed from normal operation
 
-## Phase 5 — Risk & Trade Planning
-- [x] Risk-based position sizing
-- [x] ATR stops
-- [x] Structure-aware stop protection
-- [x] Entry zone
-- [x] TP1 / TP2 and R-multiples
-- [x] Notional exposure cap
-- [x] Portfolio-wide open-risk and position limits
-- [x] Gross-notional exposure limit
-- [x] Correlation-aware concentration limit
-- [x] Daily loss controls
-- [x] Weekly loss controls
-- [x] Persistent portfolio drawdown halt
+- Duplicate prototype scripts and the superseded backtest engine/risk-plan types.
+- Independent dry-run assisted approval and execution-status dashboard/API routes.
+- Multiple console entry points and a second default Compose paper service.
+- Automatic selection among unrelated strategy candidates in the core workflow.
+- Mandatory fresh news/fundamental-provider availability as a hidden trading gate.
 
-## Phase 6 — Research & Backtesting
-- [x] Shared scanner/backtest DecisionEngine
-- [x] Fee support
-- [x] Slippage support
-- [x] Long + short simulation
-- [x] Performance metrics
-- [x] Average R and setup-score diagnostics
-- [x] Spot long-only research enforcement
-- [x] Multiple years of local historical data
-- [x] Multiple-asset batch research
-- [x] Frozen universe snapshots with selection provenance and immutable file/checksum checks
-- [x] Per-asset data coverage/error reporting and historical MTF/intrabar batch wiring
-- [x] Train / validation / out-of-sample testing
-- [x] Fixed-parameter walk-forward stability testing
-- [x] Train-only parameter experiment registry
-- [ ] Per-window parameter optimization
+Alternative strategies, advanced historical diagnostics and existing guarded execution libraries remain isolated for explicit research/development. They are not connected to automatic live trading.
 
-## Phase 7 — Market Scanner
-- [x] Scan multiple symbols
-- [x] Setup filtering and scoring
-- [x] Trade-plan generation
-- [x] Rank results
-- [x] Multiple-timeframe scan
-- [x] Persistent deduplicated alerts
+## Evidence required before claiming a trading edge
 
-## Phase 8 — Paper Trading
-- [x] Simulated broker
-- [x] Continuous restart-safe paper service
-- [x] Per-market closed-candle checkpoints
-- [x] Persistent signal deduplication
-- [x] Broker state and P&L recovery after restart
-- [x] Read-only web paper-service status
-- [x] Position tracking
-- [x] Realized/unrealized P&L
-- [x] Persistent SQLite trade journal
-- [x] Paper-vs-backtest execution comparison
-- [x] Restart-persistent portfolio risk state
-- [x] Manual guarded risk-halt reset
-- [x] Management-only operation during universe discovery outages
-- [x] Universe refresh cache, heartbeat health probe and configuration compatibility checks
-- [x] Shared cycle clock and strict closed-candle validation
+- [ ] Historical data obtained and audited for the selected venue/instruments.
+- [ ] Untouched chronological holdout and walk-forward results after realistic costs.
+- [ ] Trade count, confidence intervals and sensitivity to costs and execution assumptions.
+- [ ] Forward paper observations across multiple market conditions.
+- [ ] Shared-capital portfolio simulation and current-universe selection-bias assessment.
+- [ ] Historical order-book/event evidence if those checks are to be validated retrospectively.
 
-## Phase 9 — Assisted Trading
-- [x] Immutable server-generated trade-intent queue
-- [x] Approve/reject workflow (dry-run only)
-- [x] Broker adapter protocol + dry-run adapter
-- [x] Approval/decision/execution audit trail
-- [x] Authenticated broker preparation boundary
-- [x] Environment-only credential provider
-- [x] Exchange precision / minimum-limit validation
-- [x] Live order-capable authenticated broker adapter (guarded spot only)
-- [x] Persistent normalized order-state manager
-- [x] Idempotent client-order identity
-- [x] Ambiguous submission -> reconcile-before-retry
-- [x] Partial-fill and cancellation state handling
-- [x] Connect assisted approvals to managed orders
-- [x] Live exchange order management (manual guarded spot only)
+## Separate real-money release work
 
-## Phase 10 — Automated Execution
-- [x] Guarded live spot exchange adapter
-- [x] Duplicate-order protection
-- [x] Partial-fill order-state reconciliation
-- [x] Bot-state ↔ exchange-state reconciliation
-- [x] Persistent kill switch
-- [ ] Explicit derivatives leverage / margin / position-mode controls
-- [ ] Live derivatives execution
-- [ ] Automated scanner → live execution daemon
-- [ ] WebSocket market data
-- [ ] Continuous execution monitoring / alerting
-- [x] Nonroot Docker/Compose packaging, persistent data volume and health checks
-- [ ] Provision and validate an actual VPS deployment
+- [ ] Explicit automated strategy-to-live-execution integration and operating mode.
+- [ ] Account-specific permissions, precision/minimums, cost tiers and order reconciliation acceptance.
+- [ ] Venue failure, ambiguous submission, partial-fill, cancellation and restart drills on the intended account/test environment.
+- [ ] Deployment authentication, continuous monitoring, alerting and operator recovery procedures.
+- [ ] Derivative margin/leverage/position-mode/liquidation/funding model if derivatives execution is requested.
 
-## Evidence still required
-
-Feature completion is separate from evidence of a profitable strategy. The v0.17 multi-asset changes have functional, integration, container and browser checks; these checks use synthetic data or API fixtures. Current-universe research carries selection/survivorship bias. Multi-asset batch results use independent capital, not one shared portfolio. Real saved-data runs, untouched/forward evidence, shared-capital portfolio research, and venue-complete derivatives costs/position mechanics remain open. See `docs/MULTI_ASSET_V017.md` for commands and scope.
+There is no automatic promotion from a green test suite or a profitable historical window to real-money operation.

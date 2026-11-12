@@ -1,6 +1,6 @@
-# Coin analysis — v0.18
+# Coin analysis — v0.19
 
-This feature turns a coin name, ticker, or exact pair into a public-data research report. It is available from the **Analyze a coin** link in the existing dashboard and through the `crypto-analyze` command.
+This feature turns a coin name, ticker, or exact pair into a public-data research report. It is available from the **Analyze a coin** link in the paper dashboard and through `crypto-bot analyze`.
 
 The output is a conditional decision under explicit rules. A ready label does not establish profitable expectancy, a measured win probability, or an executed order. The combined technical, liquidity, and event workflow has not yet been validated as a profitable strategy.
 
@@ -9,8 +9,8 @@ The output is a conditional decision under explicit rules. A ready label does no
 From the repository root, with Python 3.12 or later:
 
 ```bash
-python -m pip install -e ".[web]"
-python -m uvicorn trading_bot.web.app:app --host 127.0.0.1 --port 8000
+python -m pip install -e .
+crypto-bot
 ```
 
 Open **http://127.0.0.1:8000/analyze**. Enter a name such as `Bitcoin`, a ticker such as `QNT`, or a pair such as `BTC/USDT`. Select the venue, spot/perpetual market, quote, and your analysis assumptions. Names come from exchange metadata; no handwritten coin list or fuzzy ticker guess selects a market.
@@ -26,11 +26,11 @@ Docker persists reports under the existing `/app/data` volume. As with the origi
 ### CLI
 
 ```bash
-crypto-analyze "Bitcoin" --exchange kucoin
-crypto-analyze QNT --equity 10000 --risk-percent 0.25 --notional 1000
-crypto-analyze BTC/USDT:USDT --exchange kucoin --market-type swap
-crypto-analyze ETH --no-fundamentals
-crypto-analyze SOL --journal data/analysis/sol-reports.db
+crypto-bot analyze "Bitcoin" --exchange kucoin
+crypto-bot analyze QNT --equity 10000 --risk-percent 0.25 --notional 1000
+crypto-bot analyze BTC/USDT:USDT --exchange kucoin --market-type swap
+crypto-bot analyze ETH --fundamentals
+crypto-bot analyze SOL --journal data/analysis/sol-reports.db
 ```
 
 The command prints the complete journaled report as strict JSON. It does not place an order. `--risk-percent 0.25` means **0.25%**, while `--fee-rate 0.001` means **0.1% per side**. Equity, risk amounts, and notional are denominated in the selected quote currency; USD, USDT, and USDC are supported by this profile. A stablecoin quote is not converted to dollars at a guaranteed exchange rate.
@@ -59,10 +59,10 @@ The UI displays timestamps in **America/Halifax**. Stored timestamps remain UTC.
 The analysis profile uses the existing shared strategy engine:
 
 1. **4h context:** the higher-timeframe regime must be compatible with the selected strategy.
-2. **1h setup:** evaluate `trend_continuation_v2`, `breakout_retest`, and `range_mean_reversion`, then use the existing strategy selection and planning rules.
+2. **1h setup:** evaluate `trend_continuation_v2` under the shared core policy. Each timeframe uses the same trailing 400 raw closed candles for indicators; a complete window is required.
 3. **15m entry:** require the selected strategy's lower-timeframe confirmation.
 4. **Instrument and liquidity:** verify the requested market and test the actual proposed exposure against the public order book.
-5. **Project/event evidence:** require identity-verified, fresh project evidence and available KuCoin announcement coverage when fundamentals are enabled. A matching critical event requires review. Notices from other selected exchanges are not checked; that gap is explicit in those reports.
+5. **Optional project/event context:** fundamental providers are disabled by default. When requested, identity, supply, events and gaps are explanatory evidence and do not silently change the technical policy. A critical event sets `decision.manual_review_required` and appears in warnings/counter-evidence while preserving the technical action. Notices from other selected exchanges are not checked; that gap remains explicit.
 6. **Price and risk:** ensure current executable-side price is inside the entry zone and that stops, targets, size, and modeled costs still qualify.
 7. **Freshness and persistence:** expire the report when its required market evidence expires and save the snapshot before returning it.
 
@@ -126,9 +126,9 @@ The provider layer makes bounded, read-only requests and records source URLs, ob
 
 Ambiguous symbols are not guessed. Missing unlock schedules and unavailable provider or event coverage remain visible gaps. Holder concentration and broader adoption/activity metrics are not supplied. A failed request does not mean there are no risks. An optional `COINGECKO_DEMO_API_KEY` is sent only in the provider's header; exchange trading keys are not needed for this feature.
 
-`--no-fundamentals` or the UI toggle explicitly selects technical-only analysis. That choice remains in the saved inputs and warnings; the resulting report must not be treated as having passed project or news checks.
+`--fundamentals` or the UI toggle explicitly adds fundamental research context. `--no-fundamentals` remains available; disabled is the default. The choice remains in saved inputs and warnings. Technical readiness does not certify that the coin has passed project or news checks.
 
-Current fundamental observations have `historical_backtest_eligible=false`. They must not be copied backward into historical simulations. The existing strategy backtests do not validate this newly combined event/liquidity workflow; that requires appropriate historical evidence and forward paper evaluation.
+Current fundamental observations have `historical_backtest_eligible=false`. They must not be copied backward into historical simulations. The shared strategy backtests do not replay present-day event/liquidity evidence; that requires appropriate historical inputs and forward paper evaluation. Reports carry the core policy and fingerprint so the modeled settings can be compared explicitly.
 
 ## API
 

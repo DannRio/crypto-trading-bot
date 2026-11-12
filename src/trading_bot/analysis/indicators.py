@@ -1,4 +1,5 @@
 import pandas as pd
+from trading_bot.config import INDICATOR_WINDOW
 
 
 def add_ema(df: pd.DataFrame, periods: tuple[int, ...] = (50, 200)) -> pd.DataFrame:
@@ -53,3 +54,11 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     result = add_atr(result)
     result = add_volume_sma(result)
     return result
+
+
+def decision_indicators(df: pd.DataFrame, window: int = INDICATOR_WINDOW) -> pd.DataFrame:
+    """Use the same causal raw-candle window in live and historical decisions."""
+    if type(window) is not int or window < 21:
+        raise ValueError("Indicator window must contain at least 21 candles.")
+    raw = df.tail(window).copy()
+    return add_indicators(raw)

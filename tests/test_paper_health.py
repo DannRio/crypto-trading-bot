@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 
 from trading_bot.paper.health import paper_health
+from trading_bot.paper.locking import JournalWriterLock
 
 
 NOW = datetime(2026, 11, 1, 12, tzinfo=timezone.utc)
@@ -31,7 +32,8 @@ def test_heartbeat_health_reports_degraded_cycles(tmp_path, status, healthy):
     path = tmp_path / "paper.db"
     heartbeat(path, status=status)
     before = path.read_bytes()
-    result = paper_health(path, now=NOW + timedelta(seconds=10))
+    with JournalWriterLock(path):
+        result = paper_health(path, now=NOW + timedelta(seconds=10))
     assert result["healthy"] is healthy
     assert result["status"] == status
     assert path.read_bytes() == before
@@ -47,9 +49,20 @@ def test_fresh_process_with_stale_completed_cycle_is_unhealthy(tmp_path):
 def test_starting_another_cycle_cannot_erase_previous_failure(tmp_path, previous_result):
     path = tmp_path / "paper.db"
     heartbeat(path, status="running", last_cycle_result=previous_result)
-    result = paper_health(path, now=NOW)
+    with JournalWriterLock(path):
+        result = paper_health(path, now=NOW)
     assert result["status"] == "running"
     assert result["healthy"] is False
+
+
+def test_fresh_heartbeat_without_worker_is_stopped(tmp_path):
+    path = tmp_path / "paper.db"
+    heartbeat(path)
+    result = paper_health(path, now=NOW)
+    assert result["healthy"] is False
+    assert result["status"] == "stopped"
+    assert result["writer_active"] is False
+    assert not path.with_name(path.name + ".writer.lock").exists()
 
 
 @pytest.mark.parametrize("age", [float("nan"), float("inf"), 0, -1])

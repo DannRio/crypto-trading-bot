@@ -12,6 +12,7 @@ from trading_bot.data.validation import (
     validate_ohlcv,
 )
 from trading_bot.exchanges import CCXTClient, get_public_client
+from trading_bot.exchanges.routing import canonical_exchange_id
 
 
 STABLE_BASES = frozenset(
@@ -191,6 +192,11 @@ def _is_leveraged_base(base: str, known_bases: set[str]) -> bool:
     )
 
 
+def _cancelled(cancel) -> bool:
+    """Accept a threading.Event or lightweight cancellation callback."""
+    return bool(cancel.is_set() if hasattr(cancel, "is_set") else cancel()) if cancel is not None else False
+
+
 class DynamicMarketUniverse:
     def __init__(
         self,
@@ -199,11 +205,11 @@ class DynamicMarketUniverse:
         client: CCXTClient | None = None,
         now: Callable | None = None,
     ):
-        self.exchange_id = exchange_id
+        self.exchange_id = canonical_exchange_id(exchange_id, market_type)
         self.market_type = market_type
         self.now = now or (lambda: pd.Timestamp.now(tz="UTC"))
         self.client = client or get_public_client(
-            exchange_id=exchange_id,
+            exchange_id=self.exchange_id,
             market_type=market_type,
         )
 
@@ -211,8 +217,9 @@ class DynamicMarketUniverse:
         self,
         symbols: list[str],
         max_requests: int,
+        cancel=None,
     ) -> tuple[dict, tuple[str, ...]]:
-        if not symbols:
+        if not symbols or _cancelled(cancel):
             return {}, ()
         warnings: list[str] = []
         bulk_error = None
@@ -238,13 +245,15 @@ class DynamicMarketUniverse:
                 "missing markets in symbol order. Liquidity ranking covers only returned tickers."
             )
         for symbol in missing[:max_requests]:
+            if _cancelled(cancel):
+                break
             try:
                 ticker = self.client.fetch_ticker(symbol)
                 if isinstance(ticker, dict) and ticker:
                     tickers[symbol] = ticker
             except Exception:
                 continue
-        if not tickers and bulk_error is not None:
+        if not tickers and bulk_error is not None and not _cancelled(cancel):
             raise RuntimeError(
                 "Could not fetch ticker liquidity for any eligible market."
             ) from bulk_error
@@ -256,6 +265,7 @@ class DynamicMarketUniverse:
         config: UniverseConfig,
         rejected: dict[str, int],
         warnings: list[str],
+        cancel=None,
     ) -> list[MarketCandidate]:
         selected: list[MarketCandidate] = []
         selected_bases: set[str] = set()
@@ -265,6 +275,8 @@ class DynamicMarketUniverse:
         delta = _timeframe_delta(config.history_timeframe)
 
         for candidate in candidates:
+            if _cancelled(cancel):
+                break
             if len(selected) >= config.max_markets:
                 break
             if config.unique_base_assets and candidate.base.upper() in selected_bases:
@@ -332,6 +344,8 @@ class DynamicMarketUniverse:
     def select(
         self,
         config: UniverseConfig | None = None,
+        *,
+        cancel=None,
     ) -> UniverseSelection:
         config = config or UniverseConfig(
             market_type=self.market_type,
@@ -343,7 +357,11 @@ class DynamicMarketUniverse:
 
         # The shared public client retains metadata between scans. Discovery is
         # the refresh boundary so new listings and inactive markets are visible.
+        if _cancelled(cancel):
+            return UniverseSelection((), 0, 0, ("Universe selection cancelled.",))
         markets = self.client.load_markets(reload=True)
+        if _cancelled(cancel):
+            return UniverseSelection((), len(markets), 0, ("Universe selection cancelled.",))
         total_markets = len(markets)
         rejected = {
             "market_type": 0,
@@ -431,7 +449,7 @@ class DynamicMarketUniverse:
             eligible[str(symbol)] = market
 
         tickers, ticker_warnings = self._fetch_tickers(
-            sorted(eligible), config.max_ticker_requests,
+            sorted(eligible), config.max_ticker_requests, cancel=cancel,
         )
         warnings = list(ticker_warnings)
         if len(quotes) > 1:
@@ -499,8 +517,12 @@ class DynamicMarketUniverse:
                 config,
                 rejected,
                 warnings,
+                cancel=cancel,
             )
         )
+        if _cancelled(cancel):
+            selected = ()
+            warnings.append("Universe selection cancelled.")
         return UniverseSelection(
             candidates=selected,
             total_markets=total_markets,

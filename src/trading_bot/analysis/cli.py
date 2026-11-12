@@ -21,10 +21,10 @@ def _finite_float(raw: str) -> float:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="crypto-analyze",
+        prog="crypto-bot analyze",
         allow_abbrev=False,
         description="Analyze one crypto market using public data, save the research report to its journal, and print JSON. No orders are placed.",
-        epilog='Examples: crypto-analyze QNT; crypto-analyze "Bitcoin Cash" --quote USDT; crypto-analyze BTC/USDT:USDT --market-type swap',
+        epilog='Examples: crypto-bot analyze QNT; crypto-bot analyze "Bitcoin Cash" --quote USDT; crypto-bot analyze BTC/USDT:USDT --market-type swap',
     )
     parser.add_argument("query", help="Coin name, ticker, or exact trading pair. Quote names containing spaces.")
     parser.add_argument("--exchange", default="kucoin", help="Exchange identifier (default: kucoin).")
@@ -41,8 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Fee fraction per side; 0.001 means 0.1%% (default: 0.001).")
     parser.add_argument("--slippage-bps", type=_finite_float, default=5,
                         help="Assumed slippage per side in basis points (default: 5).")
-    parser.add_argument("--no-fundamentals", action="store_true",
-                        help="Disable fundamental and event providers for this request; the coverage gap remains explicit.")
+    parser.add_argument("--fundamentals", action=argparse.BooleanOptionalAction, default=False,
+                        help="Request optional project and event context for manual review (default: disabled).")
     parser.add_argument("--journal", metavar="PATH",
                         help="SQLite journal path. Default: TRADING_ANALYSIS_DB or data/analysis/reports.db.")
     return parser
@@ -57,7 +57,7 @@ def _runtime_types():
 
 
 def _error(message: str) -> None:
-    print(f"crypto-analyze: error: {message}", file=sys.stderr)
+    print(f"crypto-bot analyze: error: {message}", file=sys.stderr)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -78,7 +78,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             notional=args.notional,
             fee_rate=args.fee_rate,
             slippage_bps=args.slippage_bps,
-            include_fundamentals=not args.no_fundamentals,
+            include_fundamentals=args.fundamentals,
         )
     except (ValueError, TypeError):
         # Validation errors must not echo untrusted input or exception details.

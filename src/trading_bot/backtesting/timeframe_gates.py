@@ -7,7 +7,8 @@ from dataclasses import replace
 
 import pandas as pd
 
-from trading_bot.analysis import add_indicators, analyze_market_structure
+from trading_bot.analysis import decision_indicators, analyze_market_structure
+from trading_bot.config import INDICATOR_WINDOW
 from trading_bot.data import timeframe_to_milliseconds, validate_ohlcv
 from trading_bot.data.validation import latest_expected_close
 from trading_bot.scanner.multi_timeframe import (
@@ -49,7 +50,6 @@ class HistoricalTimeframeGates:
             frame = frame.sort_values("timestamp").reset_index(drop=True)
             if frame["timestamp"].duplicated().any():
                 raise ValueError(f"Duplicate candles in {timeframe} history")
-            frame = add_indicators(frame)
             self.prepared[timeframe] = (
                 frame,
                 frame["timestamp"] + pd.to_timedelta(
@@ -60,16 +60,15 @@ class HistoricalTimeframeGates:
     def _closed_snapshot(self, timeframe: str, decision_close: pd.Timestamp):
         frame, close_times = self.prepared[timeframe]
         n = int(close_times.searchsorted(decision_close, side="right"))
-        # Keep all past history to maintain consistent EMA warm-up.
-        if n < 220:
+        if n < INDICATOR_WINDOW:
             return None, None
-        closed = frame.iloc[:n]
+        closed = frame.iloc[max(0, n - INDICATOR_WINDOW):n].copy()
         if close_times.iloc[n - 1] != latest_expected_close(decision_close, timeframe):
             return None, None
-        quality = validate_ohlcv(closed.tail(500), timeframe=timeframe, min_rows=220)
+        quality = validate_ohlcv(closed, timeframe=timeframe, min_rows=INDICATOR_WINDOW)
         if not quality.valid or quality.missing_intervals:
             return None, quality
-        return closed, quality
+        return decision_indicators(closed), quality
 
     def apply_assessment(self, assessment, signal_open_time, context_only=False):
         from trading_bot.decision.models import DecisionResult

@@ -1,11 +1,14 @@
 from pathlib import Path
+import os
 import re
+from tempfile import NamedTemporaryFile
 
 import pandas as pd
 
 from trading_bot.data.market_data import OHLCV_COLUMNS, normalize_ohlcv
 from trading_bot.data.validation import latest_expected_close, validate_ohlcv
 from trading_bot.exchanges.ccxt_client import CCXTClient
+from trading_bot.exchanges.routing import canonical_exchange_id
 
 
 def timeframe_to_milliseconds(timeframe: str) -> int:
@@ -140,7 +143,7 @@ class HistoricalDataStore:
     ) -> Path:
         return (
             self.root
-            / exchange_id.lower()
+            / canonical_exchange_id(exchange_id, market_type)
             / market_type.lower()
             / _safe_symbol(symbol)
             / f"{timeframe}.csv"
@@ -208,7 +211,21 @@ class HistoricalDataStore:
                 .reset_index(drop=True)
             )
 
-        combined.to_csv(path, index=False)
+        temporary = None
+        try:
+            # Readers see either the previous complete dataset or the new one.
+            # A shutdown during serialization must never truncate live history.
+            with NamedTemporaryFile(mode="w", encoding="utf-8", newline="",
+                                    dir=path.parent, prefix=f".{path.name}.",
+                                    suffix=".tmp", delete=False) as handle:
+                temporary = Path(handle.name)
+                combined.to_csv(handle, index=False)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
         return path
 
 

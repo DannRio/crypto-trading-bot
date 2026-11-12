@@ -1,4 +1,8 @@
 from dataclasses import replace
+from contextlib import contextmanager
+from copy import deepcopy
+from functools import wraps
+import math
 from trading_bot.core.candle_execution import economic_break_even
 from trading_bot.paper.candle_execution import process_broker_candle
 from uuid import uuid4
@@ -21,6 +25,14 @@ from trading_bot.paper.risk import (
     RiskStateUpdate,
 )
 from trading_bot.planning import TradeSetup
+
+
+def _atomic_method(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self.atomic_transition():
+            return method(self, *args, **kwargs)
+    return wrapped
 
 
 def _timestamp(value) -> pd.Timestamp:
@@ -93,10 +105,11 @@ class PaperBroker:
         risk_config: PortfolioRiskConfig | None = None,
         journal: PaperJournal | None = None,
     ):
-        if starting_equity <= 0:
+        if not math.isfinite(starting_equity) or starting_equity <= 0:
             raise ValueError("starting_equity must be positive.")
-        if fee_rate < 0 or slippage_bps < 0:
-            raise ValueError("Fees and slippage cannot be negative.")
+        if not (math.isfinite(fee_rate) and 0 <= fee_rate < 1
+                and math.isfinite(slippage_bps) and 0 <= slippage_bps < 10000):
+            raise ValueError("Fees and slippage must be finite and within supported bounds.")
 
         self.ambiguous_bars = 0
         self.starting_equity = starting_equity
@@ -104,6 +117,7 @@ class PaperBroker:
         self.slippage_bps = slippage_bps
         self.risk_manager = PortfolioRiskManager(risk_config)
         self.journal = journal
+        self._transition_depth = 0
 
         self.orders: dict[str, PaperOrder] = {}
         self.positions: dict[tuple[str, str], PaperPosition] = {}
@@ -119,6 +133,48 @@ class PaperBroker:
             else None
         )
 
+    @contextmanager
+    def atomic_transition(self):
+        """Keep broker memory and its durable account on the same transition.
+
+        The service may include a candle checkpoint in this scope. Speculative
+        OHLC-path brokers have no journal and must not persist or nest commits.
+        Closed orders/trades are immutable here, so only active order objects
+        require a deep state snapshot.
+        """
+        if self.journal is None or self._transition_depth:
+            yield self
+            return
+        order_refs = dict(self.orders)
+        order_states = {key: deepcopy(order.__dict__) for key, order in self.orders.items()
+                        if order.status in {PaperOrderStatus.PENDING, PaperOrderStatus.FILLED}}
+        position_refs = dict(self.positions)
+        position_states = {key: deepcopy(position.__dict__) for key, position in self.positions.items()}
+        snapshot = {
+            "completed_trades": list(self.completed_trades), "last_prices": dict(self.last_prices),
+            "realized_net_pnl": self.realized_net_pnl, "fees_paid": self.fees_paid,
+            "historical_peak_equity": self.historical_peak_equity,
+            "risk_state": deepcopy(self.risk_state), "ambiguous_bars": self.ambiguous_bars,
+        }
+        self._transition_depth = 1
+        try:
+            with self.journal.transaction():
+                yield self
+        except BaseException:
+            for key, state in order_states.items():
+                order_refs[key].__dict__.clear()
+                order_refs[key].__dict__.update(state)
+            for key, state in position_states.items():
+                position_refs[key].__dict__.clear()
+                position_refs[key].__dict__.update(state)
+            self.orders = order_refs
+            self.positions = position_refs
+            for key, value in snapshot.items():
+                setattr(self, key, value)
+            raise
+        finally:
+            self._transition_depth = 0
+
 
 
     @property
@@ -128,12 +184,18 @@ class PaperBroker:
             and self.risk_state.halted
         )
 
+    @_atomic_method
     def evaluate_account_risk(
         self,
         timestamp,
     ) -> RiskStateUpdate:
         account_equity = self.account_equity()
         state = self.risk_state
+        timestamp = _timestamp(timestamp)
+        if state is not None:
+            # Recovery can visit more than one symbol's backlog. Never move
+            # portfolio day/week baselines back to a period already evaluated.
+            timestamp = max(timestamp, _timestamp(state.evaluated_at))
         if state is None:
             state = self.risk_manager.initialize_state(
                 account_equity=account_equity,
@@ -155,6 +217,7 @@ class PaperBroker:
             self.journal.save_risk_state(update.state)
         return update
 
+    @_atomic_method
     def reset_risk_halt(
         self,
         timestamp,
@@ -200,6 +263,14 @@ class PaperBroker:
             order.planned_risk
             for order in self.pending_orders
         )
+
+    def _stop_risk(self, signal, entry_price, stop_price, quantity):
+        direction = 1 if signal == Signal.LONG else -1
+        stop_fill = _exit_with_slippage(stop_price, signal, self.slippage_bps)
+        per_unit = direction * (entry_price - stop_fill) + self.fee_rate * (entry_price + stop_fill)
+        # A profitable protected stop is not negative risk, and its absolute
+        # distance from entry must not be counted as a new potential loss.
+        return max(0.0, per_unit) * quantity
 
     def unrealized_pnl(self) -> float:
         total = 0.0
@@ -247,6 +318,7 @@ class PaperBroker:
                 "A PaperJournal is required to restore broker state."
             )
 
+        self.journal.verify_account_integrity()
         self.orders.clear()
         self.positions.clear()
         self.completed_trades.clear()
@@ -372,10 +444,8 @@ class PaperBroker:
                         "Persisted FILLED order is missing fill data: "
                         f"{order.order_id}"
                     )
-                initial_risk_amount = (
-                    abs(order.fill_price - order.stop_loss)
-                    * order.position_size
-                )
+                initial_risk_amount = self._stop_risk(
+                    order.signal, order.fill_price, order.stop_loss, order.position_size)
                 remaining_size = (
                     order.remaining_size
                     if order.remaining_size is not None
@@ -386,10 +456,7 @@ class PaperBroker:
                     if order.effective_stop is not None
                     else order.stop_loss
                 )
-                current_risk = (
-                    abs(order.fill_price - effective_stop)
-                    * remaining_size
-                )
+                current_risk = self._stop_risk(order.signal, order.fill_price, effective_stop, remaining_size)
                 self.positions[
                     (order.symbol, order.timeframe)
                 ] = PaperPosition(
@@ -440,6 +507,7 @@ class PaperBroker:
         }
 
 
+    @_atomic_method
     def submit_setup(
         self,
         symbol: str,
@@ -515,6 +583,7 @@ class PaperBroker:
             return True
         return bool(self.journal and self.journal.has_setup_event(symbol, timeframe, event_id))
 
+    @_atomic_method
     def cancel_order(
         self,
         order_id: str,
@@ -528,6 +597,7 @@ class PaperBroker:
         if self.journal:
             self.journal.save_order(order)
 
+    @_atomic_method
     def cancel_all_pending(
         self,
         reason: str = "CANCELLED",
@@ -535,6 +605,7 @@ class PaperBroker:
         for order in list(self.pending_orders):
             self.cancel_order(order.order_id, reason=reason)
 
+    @_atomic_method
     def _fill_order(
         self,
         order: PaperOrder,
@@ -549,6 +620,8 @@ class PaperBroker:
         direction = 1 if order.signal == Signal.LONG else -1
         stop_fill = _exit_with_slippage(order.stop_loss, order.signal, self.slippage_bps)
         loss_per_unit = direction * (fill_price - stop_fill) + self.fee_rate * (fill_price + stop_fill)
+        if not math.isfinite(loss_per_unit) or loss_per_unit <= 0:
+            raise ValueError("The proposed fill has no finite positive modeled stop loss.")
         budget = order.risk_budget if order.risk_budget > 0 else order.planned_risk
         order.position_size = min(order.position_size, budget / loss_per_unit,
                                   self.account_equity() / (fill_price * (1 + self.fee_rate)))
@@ -557,10 +630,7 @@ class PaperBroker:
             * order.position_size
             * self.fee_rate
         )
-        initial_risk = (
-            abs(fill_price - order.stop_loss)
-            * order.position_size
-        )
+        initial_risk = loss_per_unit * order.position_size
 
         self.realized_net_pnl -= entry_fee
         self.fees_paid += entry_fee
@@ -606,6 +676,7 @@ class PaperBroker:
             self.journal.save_order(order)
         return position
 
+    @_atomic_method
     def _take_tp1(
         self,
         key: tuple[str, str],
@@ -660,17 +731,10 @@ class PaperBroker:
                     or (position.signal == Signal.SHORT and stop > position.take_profit_1)):
                 position.effective_stop = stop
 
-        position.risk_amount = (
-            abs(
-                position.entry_price
-                - (
-                    position.effective_stop
-                    if position.effective_stop is not None
-                    else position.stop_loss
-                )
-            )
-            * position.position_size
-        )
+        position.risk_amount = self._stop_risk(
+            position.signal, position.entry_price,
+            position.effective_stop if position.effective_stop is not None else position.stop_loss,
+            position.position_size)
 
         order = self.orders[position.order_id]
         order.tp1_hit = True
@@ -688,6 +752,7 @@ class PaperBroker:
         if self.journal:
             self.journal.save_order(order)
 
+    @_atomic_method
     def _close_position(
         self,
         key: tuple[str, str],
@@ -803,6 +868,7 @@ class PaperBroker:
             self.journal.save_trade(trade)
         return trade
 
+    @_atomic_method
     def process_candle(
         self,
         symbol: str,
@@ -811,6 +877,7 @@ class PaperBroker:
     ) -> list[PaperTrade]:
         return process_broker_candle(self, symbol, timeframe, candle)
 
+    @_atomic_method
     def close_all(
         self,
         timestamp,

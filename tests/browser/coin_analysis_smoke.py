@@ -8,8 +8,10 @@ All API calls are intercepted. Only a failure screenshot is written, to
 coin-analysis-smoke-failure.png. These fixtures are not trading signals.
 """
 
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from functools import partial
+import hashlib
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -53,6 +55,21 @@ FETCH_GATE = """() => {
 
 def iso(value):
     return value.isoformat().replace("+00:00", "Z")
+
+
+def synthetic_policy(risk_percent=0.25, notional=1000, fee_rate=0.001, slippage_bps=5):
+    policy = {
+        "policy_id": "trend-continuation-v2-4h-1h-15m-v1",
+        "settings": dict(strategy_names=["trend_continuation_v2"], timeframe="1h",
+                         confirmation_timeframes=["4h"], entry_timeframe="15m",
+                         candle_limit=500, indicator_window=400, min_history_candles=400,
+                         risk_percent=risk_percent / 100, fee_rate=fee_rate,
+                         slippage_bps=slippage_bps, notional_cap=notional,
+                         max_notional_percent=1, min_confirmed_score=70,
+                         min_blended_net_rr=1),
+    }
+    encoded = json.dumps(policy, sort_keys=True, separators=(",", ":"))
+    return dict(policy, fingerprint=hashlib.sha256(encoded.encode()).hexdigest())
 
 
 def candles(count, minutes, bearish=False):
@@ -111,6 +128,7 @@ def synthetic_report(query="QNT", action="LONG_READY", report_id="fixture-qnt",
     levels.update(support=96, resistance=108)
     return {
         "report_id": report_id, "generated_at": iso(NOW), "expires_at": deadline,
+        "engine_version": "coin-analysis-v2.0", "policy": synthetic_policy(),
         "instrument": dict(name="Ethereum" if base == "ETH" else "Quant",
                            symbol=symbol, base=base, quote="USDT", exchange="kucoin",
                            market_type=market_type),
@@ -122,6 +140,7 @@ def synthetic_report(query="QNT", action="LONG_READY", report_id="fixture-qnt",
             "counter_evidence": ["Liquidity and execution costs can change after this snapshot."],
             "blockers": [] if action.endswith("READY") else ["Entry confirmation pending."],
             "score": 78, "win_probability": None, "validated": False,
+            "manual_review_required": False,
         },
         "technical": {
             "as_of": iso(NOW),
@@ -182,6 +201,7 @@ def synthetic_report(query="QNT", action="LONG_READY", report_id="fixture-qnt",
         },
         "fundamentals": {
             "status": "partial", "identity": {"name": "Quant", "coingecko_id": "quant-network"},
+            "decision_role": "optional_manual_context",
             "metrics": dict(market_cap_usd=1_000_000_000, circulating_supply=12_000_000,
                             total_supply=15_000_000, circulating_to_total_ratio=0.8),
             "review_required": False,
@@ -222,11 +242,14 @@ def run_checks(context, base_url, pages):
             if query == "OFFLINE":
                 route.fulfill(status=503, json={"detail": "Synthetic provider outage."})
                 return
-            action = {"WAIT": "WAIT", "DERIVATIVE UNKNOWN": "WAIT", "CRITICAL EVENT": "WAIT",
+            action = {"WAIT": "WAIT", "DERIVATIVE UNKNOWN": "WAIT",
                       "BEAR": "SHORT_READY", "NO TRADE": "NO_TRADE",
                       "UNAVAILABLE": "INSUFFICIENT_DATA"}.get(query, "LONG_READY")
             report = synthetic_report(body["query"], action, f"fixture-{len(requests)}",
                                       market_type=body["market_type"])
+            report["policy"] = synthetic_policy(
+                **{key: body[key] for key in ("risk_percent", "notional", "fee_rate", "slippage_bps")})
+            report["inputs"] = {"request": deepcopy(body), "policy": deepcopy(report["policy"])}
             report["liquidity"]["notional"] = body["notional"]
             report["plan"]["costs"].update(fee_rate_per_side=body["fee_rate"],
                                            slippage_bps_per_side=body["slippage_bps"])
@@ -255,7 +278,7 @@ def run_checks(context, base_url, pages):
                 }
             if query == "BEAR" and body["market_type"] == "swap":
                 report["derivatives"]["funding"]["fundingRate"] = 0
-            if query == "CRITICAL EVENT":
+            if query == "CRITICAL EVENT" and body["include_fundamentals"]:
                 report["technical"]["entry_trigger"]["confirmed"] = True
                 report["technical"]["patterns"][0]["status"] = "CONFIRMED"
                 report["plan"]["status"] = "CONFIRMED"
@@ -263,9 +286,20 @@ def run_checks(context, base_url, pages):
                 report["fundamentals"]["risk_flags"] = ["Synthetic critical announcement requires source review."]
                 report["fundamentals"]["events"][0].update(
                     title="Synthetic QNT trading suspension", severity="high", category="service_disruption")
-                report["decision"]["blockers"] = ["Critical exchange announcement requires review."]
+                report["decision"]["manual_review_required"] = True
+                report["decision"]["counter_evidence"].append(
+                    "A matching critical project or exchange event requires manual review.")
+            if query == "MISSING CONTEXT":
+                report["fundamentals"] = {
+                    "status": "unavailable", "decision_role": "optional_manual_context",
+                    "review_required": False, "sources": [], "events": [],
+                    "coverage_gaps": ["Synthetic optional provider outage."],
+                }
             if not body["include_fundamentals"]:
-                report["fundamentals"] = {"status": "disabled", "coverage_gaps": ["Checks disabled."]}
+                report["fundamentals"] = {
+                    "status": "disabled", "decision_role": "optional_manual_context",
+                    "coverage_gaps": ["Optional fundamental and event context was not requested."],
+                }
             reports[report["report_id"]] = report
             response = report
         elif path == "/api/analysis/history":
@@ -291,6 +325,9 @@ def run_checks(context, base_url, pages):
     page.clock.install(time=NOW)
     page.goto(base_url + "/coin.html", wait_until="domcontentloaded")
     expect(page.locator("#exchange")).to_have_value("kucoin")
+    expect(page.locator("#includeFundamentals")).not_to_be_checked()
+    expect(page.locator("#formStatus")).to_contain_text("Trend continuation v2")
+    expect(page.locator("#formStatus")).to_contain_text("400 closed candles")
     expect(page.locator("#historyRows")).to_contain_text("EXPIRED")
     expect(page.locator("#result")).to_be_hidden()
     assert not requests, "Opening the page must not contact exchanges to analyze a coin"
@@ -301,6 +338,18 @@ def run_checks(context, base_url, pages):
     page.fill("#slippageBps", "11")
     page.click("#analyzeButton")
     expect(page.locator("#actionBadge")).to_have_text("LONG READY")
+    expect(page.locator("#fundamentalSummary")).to_contain_text("disabled")
+    expect(page.locator("#planEntry")).to_have_text("99 – 101")
+    expect(page.locator("#manualReviewNotice")).to_be_hidden()
+    assert requests[-1]["include_fundamentals"] is False
+    page.check("#includeFundamentals")
+    expect(page.locator("#result")).to_be_hidden()
+    page.click("#analyzeButton")
+    expect(page.locator("#actionBadge")).to_have_text("LONG READY")
+    expect(page.locator("#reportPolicy")).to_contain_text("Trend continuation v2")
+    expect(page.locator("#reportPolicy")).to_contain_text("4h context / 1h setup / 15m confirmation")
+    expect(page.locator("#reportPolicy")).to_contain_text("400 closed candles per timeframe")
+    expect(page.locator("#fundamentalSummary")).to_contain_text("does not change the technical action")
     expect(page.locator("#instrumentName")).to_have_text("Quant")
     expect(page.locator("#instrumentMeta")).to_contain_text("12:00")  # Halifax, not UTC.
     expect(page.locator("#priceChart [data-candle]")).to_have_count(60)
@@ -348,9 +397,11 @@ def run_checks(context, base_url, pages):
     with page.expect_download() as downloaded:
         page.click("#downloadReport")
     saved = json.loads(Path(downloaded.value.path()).read_text())
-    assert saved["report_id"] == "fixture-1" and saved["decision"]["win_probability"] is None
+    assert saved["report_id"] == "fixture-2" and saved["decision"]["win_probability"] is None
     assert saved["plan"]["stop_loss"] == 95
-    assert downloaded.value.suggested_filename == "coin-analysis-fixture-1.json"
+    assert saved["policy"]["settings"]["strategy_names"] == ["trend_continuation_v2"]
+    assert saved["policy"]["settings"]["indicator_window"] == 400
+    assert downloaded.value.suggested_filename == "coin-analysis-fixture-2.json"
 
     # An unexpired stored READY report is still clearly a saved snapshot.
     page.locator("#historyRows tr").first.locator("button").click()
@@ -390,11 +441,23 @@ def run_checks(context, base_url, pages):
 
     page.fill("#query", "CRITICAL EVENT")
     page.click("#analyzeButton")
-    expect(page.locator("#actionBadge")).to_have_text("WAIT")
+    expect(page.locator("#actionBadge")).to_have_text("LONG READY")
+    expect(page.locator("#manualReviewNotice")).to_be_visible()
+    expect(page.locator("#manualReviewText")).to_contain_text("do not evaluate this event")
     expect(page.locator("#timeframeRows")).to_contain_text("Confirmed")
-    expect(page.locator("#counterEvidence")).to_contain_text("Critical exchange announcement requires review")
+    expect(page.locator("#counterEvidence")).to_contain_text("requires manual review")
     expect(page.locator("#fundamentalFlags")).to_contain_text("Source review is required")
-    expect(page.locator("#planReadiness")).to_contain_text("not currently satisfied")
+    expect(page.locator("#planReadiness")).to_contain_text("entry gates passed")
+    expect(page.locator("#planReadiness")).to_contain_text("Manual event review remains required")
+    expect(page.locator("#planStop")).to_have_text("95")
+
+    # An optional news/provider outage does not silently veto the technical plan.
+    page.fill("#query", "MISSING CONTEXT")
+    page.click("#analyzeButton")
+    expect(page.locator("#actionBadge")).to_have_text("LONG READY")
+    expect(page.locator("#manualReviewNotice")).to_be_hidden()
+    expect(page.locator("#coverageGapList")).to_contain_text("optional provider outage")
+    expect(page.locator("#planReadiness")).to_contain_text("entry gates passed")
 
     for query, badge in (("BEAR", "SHORT READY"), ("WAIT", "WAIT"),
                          ("NO TRADE", "NO TRADE"), ("UNAVAILABLE", "INSUFFICIENT DATA")):
@@ -458,7 +521,7 @@ def run_checks(context, base_url, pages):
     assert not unexpected, f"Unexpected API requests: {unexpected}"
     assert not external_requests, f"Unexpected external requests: {external_requests}"
     assert not errors, f"Browser JavaScript errors: {errors}"
-    print("PASS: coin report states, exact market choice, chart/plan agreement, benchmark context, "
+    print("PASS: core policy, optional news/manual review, coin states, exact market choice, chart/plan agreement, benchmark context, "
           "funding/OI unknowns, cost-inclusive risk, source safety, download, stale response rejection, "
           "expiry, history, failure, and mobile layout")
 

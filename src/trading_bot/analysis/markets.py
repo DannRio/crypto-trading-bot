@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import math
 
 from trading_bot.exchanges import get_public_client
+from trading_bot.exchanges.routing import canonical_exchange_id
 from trading_bot.scanner.universe import STABLE_BASES, _is_leveraged_base
 
 
@@ -53,7 +54,7 @@ def data_exchange_id(exchange_id, market_type):
     exchange_id = str(exchange_id).strip().lower()
     if market_type not in {"spot", "swap"}:
         raise ValueError("Coin analysis supports spot or perpetual swap markets.")
-    return "kucoinfutures" if exchange_id == "kucoin" and market_type == "swap" else exchange_id
+    return canonical_exchange_id(exchange_id, market_type)
 
 
 def _currency_names(currency):

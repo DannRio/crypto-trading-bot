@@ -1,7 +1,9 @@
 import argparse
+import signal
+from threading import Event, current_thread, main_thread
 
 import pandas as pd
-from trading_bot.config import apply_profile
+from trading_bot.config import apply_profile, operator_policy
 
 from trading_bot.data import HistoricalDataStore, validate_ohlcv
 from trading_bot.paper import (
@@ -14,6 +16,8 @@ from trading_bot.paper import (
     compare_paper_to_backtest,
     run_paper_replay,
 )
+from trading_bot.paper.journal import PaperJournalIntegrityError, PaperPersistenceError
+from trading_bot.paper.locking import PaperAccountInUseError
 
 
 def _csv_values(raw: str) -> tuple[str, ...]:
@@ -44,7 +48,7 @@ def _add_dataset_args(parser: argparse.ArgumentParser) -> None:
 
 def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--profile", help="Shared preset (liquid-spot, broad-spot, liquid-perps) or JSON file.")
-    parser.add_argument("--exchange", default="kraken")
+    parser.add_argument("--exchange", default="kucoin")
     parser.add_argument("--market-type", default="spot")
     parser.add_argument(
         "--symbols",
@@ -56,22 +60,22 @@ def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
         "--quote-currencies",
         default="USDT",
     )
-    parser.add_argument("--max-markets", type=int, default=30)
+    parser.add_argument("--max-markets", type=int, default=10)
     parser.add_argument(
         "--min-quote-volume",
         type=float,
         default=1_000_000,
     )
-    parser.add_argument("--max-spread-bps", type=float)
+    parser.add_argument("--max-spread-bps", type=float, default=40)
     parser.add_argument(
         "--min-history-candles",
         type=int,
-        default=220,
+        default=400,
     )
     parser.add_argument(
         "--max-history-probes",
         type=int,
-        default=100,
+        default=60,
     )
     parser.add_argument("--max-ticker-requests", type=int, default=200)
     parser.add_argument("--universe-refresh-seconds", type=float, default=900)
@@ -79,21 +83,22 @@ def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--timeframe", default="1h")
     parser.add_argument(
         "--confirm-timeframes",
-        default="",
+        default="4h",
         help="Comma-separated higher timeframe regime gates.",
     )
     parser.add_argument(
         "--entry-timeframe",
-        default="",
+        default="15m",
         help="Optional lower timeframe used for entry confirmation.",
     )
     parser.add_argument("--equity", type=float, default=10_000)
-    parser.add_argument("--risk-percent", type=float, default=1.0)
+    parser.add_argument("--risk-percent", type=float, default=0.25)
     parser.add_argument("--min-score", type=int, default=70)
     parser.add_argument(
         "--strategies",
         default="trend_continuation_v2",
     )
+    parser.add_argument("--notional", type=float, default=1_000, help="Maximum quote-currency notional per entry.")
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--slippage-bps", type=float, default=5.0)
     parser.add_argument(
@@ -114,7 +119,7 @@ def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-symbol-risk-percent",
         type=float,
-        default=1.5,
+        default=1.0,
     )
     parser.add_argument("--max-positions", type=int, default=5)
     parser.add_argument(
@@ -125,7 +130,7 @@ def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-gross-notional-percent",
         type=float,
-        default=200.0,
+        default=100.0,
     )
     parser.add_argument(
         "--max-correlated-risk-percent",
@@ -169,7 +174,7 @@ def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--journal",
-        default="data/paper/continuous_paper.db",
+        default="data/paper/core_paper.db",
     )
     parser.add_argument(
         "--once",
@@ -204,20 +209,20 @@ def build_parser() -> argparse.ArgumentParser:
     status = subparsers.add_parser("status")
     status.add_argument(
         "--journal",
-        default="data/paper/continuous_paper.db",
+        default="data/paper/core_paper.db",
     )
     status.add_argument("--limit", type=int, default=20)
 
     risk_status = subparsers.add_parser("risk-status")
     risk_status.add_argument(
         "--journal",
-        default="data/paper/continuous_paper.db",
+        default="data/paper/core_paper.db",
     )
 
     risk_reset = subparsers.add_parser("risk-reset")
     risk_reset.add_argument(
         "--journal",
-        default="data/paper/continuous_paper.db",
+        default="data/paper/core_paper.db",
     )
     risk_reset.add_argument(
         "--confirm",
@@ -431,6 +436,17 @@ def _print_service_report(report) -> None:
 def _daemon(args) -> int:
     _validate_risk(args)
 
+    fingerprint = None
+    if (args.market_type == "spot" and args.timeframe == "1h" and _csv_values(args.confirm_timeframes) == ("4h",)
+            and args.entry_timeframe == "15m" and args.limit == 500
+            and _strategy_names(args) == ("trend_continuation_v2",) and args.min_score == 70):
+        try:
+            fingerprint = operator_policy(equity=args.equity, risk_percent=args.risk_percent,
+                notional=args.notional, fee_rate=args.fee_rate,
+                slippage_bps=args.slippage_bps)["fingerprint"]
+        except ValueError:
+            pass  # Explicit research configurations do not claim the operator policy.
+
     config = PaperServiceConfig(
         exchange_id=args.exchange,
         market_type=args.market_type,
@@ -463,6 +479,8 @@ def _daemon(args) -> int:
         strategy_names=_strategy_names(args),
         fee_rate=args.fee_rate,
         slippage_bps=args.slippage_bps,
+        notional_cap=args.notional,
+        policy_fingerprint=fingerprint,
         entry_expiry_bars=args.entry_expiry_bars,
         interval_seconds=args.interval_seconds,
         correlation_lookback=args.correlation_lookback,
@@ -471,6 +489,9 @@ def _daemon(args) -> int:
     )
 
     journal = PaperJournal(args.journal)
+    service = None
+    stop = Event()
+    previous_handlers = {}
     try:
         service = PaperTradingService(
             config=config,
@@ -485,8 +506,9 @@ def _daemon(args) -> int:
         )
 
         if args.once:
-            _print_service_report(service.run_once())
-            return 0
+            report = service.run_once()
+            _print_service_report(report)
+            return int(bool(report.management_errors or report.scan_errors or report.universe_error))
 
         def on_error(exc: Exception) -> None:
             print(
@@ -494,10 +516,15 @@ def _daemon(args) -> int:
                 f"{type(exc).__name__}: {exc}"
             )
 
+        if current_thread() is main_thread():
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                previous_handlers[signum] = signal.getsignal(signum)
+                signal.signal(signum, lambda *_: stop.set())
         try:
             service.run_forever(
                 on_cycle=_print_service_report,
                 on_error=on_error,
+                stop_event=stop,
             )
         except KeyboardInterrupt:
             print(
@@ -506,17 +533,20 @@ def _daemon(args) -> int:
             )
         return 0
     finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+        if service is not None:
+            service.close()
         journal.close()
 
 
 def _status(args) -> int:
-    journal = PaperJournal(args.journal)
-
-    orders = journal.orders(limit=args.limit)
-    trades = journal.trades(limit=args.limit)
-    checkpoints = journal.checkpoints()
-    signals = journal.signal_events(limit=args.limit)
-    risk_state = journal.load_risk_state()
+    with PaperJournal.open_readonly(args.journal) as journal:
+        orders = journal.orders(limit=args.limit)
+        trades = journal.trades(limit=args.limit)
+        checkpoints = journal.checkpoints()
+        signals = journal.signal_events(limit=args.limit)
+        risk_state = journal.load_risk_state()
 
     print("\n=== PORTFOLIO RISK ===")
     if risk_state is None:
@@ -588,7 +618,7 @@ def _status(args) -> int:
 
 
 def _risk_status(args) -> int:
-    journal = PaperJournal(args.journal)
+    journal = PaperJournal.open_readonly(args.journal)
     try:
         state = journal.load_risk_state()
         if state is None:
@@ -672,18 +702,13 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
-    if args.command == "replay":
-        return _replay(args)
-    if args.command == "compare":
-        return _compare(args)
-    if args.command == "daemon":
-        return _daemon(args)
-    if args.command == "status":
-        return _status(args)
-    if args.command == "risk-status":
-        return _risk_status(args)
-    if args.command == "risk-reset":
-        return _risk_reset(args)
+    actions = {"replay": _replay, "compare": _compare, "daemon": _daemon,
+               "status": _status, "risk-status": _risk_status, "risk-reset": _risk_reset}
+    if args.command in actions:
+        try:
+            return actions[args.command](args)
+        except (PaperAccountInUseError, PaperPersistenceError, PaperJournalIntegrityError, FileNotFoundError, ValueError) as exc:
+            parser.exit(1, f"Paper account: {exc}\n")
 
     raise SystemExit("Unknown command.")
 

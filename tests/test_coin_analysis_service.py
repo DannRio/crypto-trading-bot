@@ -20,17 +20,17 @@ from trading_bot.scanner import MarketScanner
 NOW = datetime(2026, 11, 12, 12, 5, tzinfo=timezone.utc)
 NOW_MS = int(NOW.timestamp() * 1000)
 DECISION_CLOSE = pd.Timestamp("2026-11-12T12:00:00Z")
-QUALITY = {"valid": True, "missing_intervals": 0, "row_count": 260}
+QUALITY = {"valid": True, "missing_intervals": 0, "row_count": 420}
 
 
 def candles(timeframe):
     delta = pd.Timedelta(timeframe.replace("m", "min"))
-    prices = [74.1 + 0.1 * index for index in range(260)]
+    prices = [58.1 + 0.1 * index for index in range(420)]
     return pd.DataFrame({
-        "timestamp": pd.date_range(end=DECISION_CLOSE - delta, periods=260, freq=delta),
+        "timestamp": pd.date_range(end=DECISION_CLOSE - delta, periods=420, freq=delta),
         "open": prices, "high": [price + 0.5 for price in prices],
         "low": [price - 0.5 for price in prices], "close": prices,
-        "volume": [1000.0] * 260,
+        "volume": [1000.0] * 420,
     })
 
 
@@ -300,8 +300,8 @@ class CoinAnalysisServiceTests(unittest.TestCase):
         self.assertTrue(report["journal"]["saved"])
         self.assertNotIn("private provider", json.dumps(report))
 
-    def test_partial_fundamentals_are_usable_but_missing_or_critical_evidence_waits(self):
-        self.assertEqual(self.analyze()["decision"]["action"], "LONG_READY")
+    def test_optional_fundamentals_preserve_technical_policy_and_expose_review_context(self):
+        self.assertEqual(self.analyze(include_fundamentals=True)["decision"]["action"], "LONG_READY")
         for change in ("stale_market", "missing_events", "critical", "wrong_identity"):
             self.fundamentals = Fundamentals()
             if change == "stale_market":
@@ -313,14 +313,22 @@ class CoinAnalysisServiceTests(unittest.TestCase):
             else:
                 self.fundamentals.report["identity"]["symbol"] = "BTC"
             with self.subTest(change=change):
-                self.assertEqual(self.analyze()["decision"]["action"], "WAIT")
+                report = self.analyze(include_fundamentals=True)
+                self.assertEqual(report["decision"]["action"], "LONG_READY")
+                self.assertEqual(report["fundamentals"]["decision_role"], "optional_manual_context")
+                self.assertEqual(report["decision"]["manual_review_required"], change == "critical")
+                expected = {"stale_market": "project evidence", "missing_events": "announcement context",
+                            "critical": "Critical event evidence", "wrong_identity": "project evidence"}[change]
+                self.assertTrue(any(expected in warning for warning in report["warnings"]))
 
     def test_explicit_technical_only_mode_does_not_call_fundamental_providers(self):
-        report = self.analyze(include_fundamentals=False)
+        report = self.analyze()
         self.assertEqual(report["decision"]["action"], "LONG_READY")
         self.assertEqual(self.fundamentals.calls, 0)
         self.assertEqual(report["fundamentals"]["status"], "disabled")
-        self.assertTrue(any("disabled" in warning for warning in report["warnings"]))
+        self.assertTrue(any("not requested" in warning for warning in report["warnings"]))
+        self.assertEqual(self.scanner_options[0]["strategy_names"], ("trend_continuation_v2",))
+        self.assertEqual(report["policy"]["settings"]["indicator_window"], 400)
 
     def test_corrupt_geometry_and_exit_allocations_are_rejected(self):
         service = self.make_service()

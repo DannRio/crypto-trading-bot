@@ -4,6 +4,7 @@ from trading_bot.analysis.indicators import (
     add_indicators,
     add_rsi,
     add_volume_sma,
+    decision_indicators,
 )
 from trading_bot.analysis.market_structure import (
     MarketStructure,
@@ -18,4 +19,5 @@ __all__ = [
     "add_rsi",
     "add_volume_sma",
     "analyze_market_structure",
+    "decision_indicators",
 ]

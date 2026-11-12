@@ -1,6 +1,7 @@
 import pandas as pd
 
-from trading_bot.analysis import add_indicators
+from trading_bot.analysis import decision_indicators
+from trading_bot.config import INDICATOR_WINDOW
 from trading_bot.core.enums import Signal, SetupStatus
 from trading_bot.decision import DecisionEngine
 from trading_bot.paper.broker import PaperBroker
@@ -15,11 +16,13 @@ def run_paper_replay(
     risk_percent: float = 0.01,
     min_confirmed_score: int = 70,
     warmup_candles: int = 220,
-    decision_lookback: int = 250,
+    decision_lookback: int = INDICATOR_WINDOW,
     allow_short: bool = True,
     strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES,
 ) -> PaperBroker:
-    prepared = add_indicators(data.copy())
+    if type(decision_lookback) is not int or decision_lookback < 21:
+        raise ValueError("decision_lookback must be an integer of at least 21 candles.")
+    prepared = data.copy()
 
     for i in range(
         max(warmup_candles, 1),
@@ -36,9 +39,9 @@ def run_paper_replay(
         if i >= len(prepared) - 1:
             continue
 
-        history = prepared.iloc[
+        history = decision_indicators(prepared.iloc[
             max(0, i - decision_lookback + 1): i + 1
-        ]
+        ], window=decision_lookback)
         decision = DecisionEngine(
             account_equity=broker.account_equity(),
             risk_percent=risk_percent,

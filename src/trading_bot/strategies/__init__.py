@@ -11,7 +11,6 @@ from trading_bot.strategies.registry import (
     normalize_strategy_names,
     select_best_assessment,
 )
-from trading_bot.strategies.trend import generate_signal
 from trading_bot.strategies.trend_continuation import evaluate_trend_continuation
 
 __all__ = [
@@ -23,7 +22,6 @@ __all__ = [
     "evaluate_range_mean_reversion",
     "evaluate_strategies",
     "evaluate_trend_continuation",
-    "generate_signal",
     "normalize_strategy_names",
     "select_best_assessment",
 ]

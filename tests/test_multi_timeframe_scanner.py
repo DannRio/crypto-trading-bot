@@ -14,7 +14,7 @@ FREQUENCIES = {
 def trending_candles(
     timeframe: str,
     direction: str,
-    rows: int = 270,
+    rows: int = 420,
 ) -> pd.DataFrame:
     step = 0.5 if direction == "up" else -0.5
     start = 100.0 if direction == "up" else 300.0

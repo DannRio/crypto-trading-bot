@@ -12,18 +12,22 @@ from uuid import uuid4
 
 import pandas as pd
 
-from trading_bot.analysis import add_indicators, analyze_market_structure
+from trading_bot.analysis import decision_indicators, analyze_market_structure
 from trading_bot.analysis.fundamentals import FundamentalService
 from trading_bot.analysis.journal import AnalysisJournal
 from trading_bot.analysis.markets import assess_liquidity, data_exchange_id, resolve_market
+from trading_bot.analysis.preflight import public_market_snapshot
+from trading_bot.config import INDICATOR_WINDOW, OPERATOR_STRATEGIES, operator_policy
 from trading_bot.data import get_ohlcv, validate_ohlcv
 from trading_bot.data.validation import latest_expected_close
 from trading_bot.exchanges import get_public_client
 from trading_bot.scanner import MarketScanner
+from trading_bot.planning import TradePlanConfig
+from trading_bot.planning.validation import revalidate_trade_plan
 
 
-ENGINE_VERSION = "coin-analysis-v1.0"
-STRATEGIES = ("trend_continuation_v2", "breakout_retest", "range_mean_reversion")
+ENGINE_VERSION = "coin-analysis-v2.0"
+STRATEGIES = OPERATOR_STRATEGIES
 EXCHANGES = {"kucoin", "kraken", "binance", "bybit", "okx", "coinbase"}
 
 
@@ -52,16 +56,6 @@ def _finite(value):
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
 
 
-def _reported_volume(value):
-    if isinstance(value, bool):
-        return False
-    try:
-        parsed = float(value)
-        return math.isfinite(parsed) and parsed >= 0
-    except (TypeError, ValueError, OverflowError):
-        return False
-
-
 def _utc(value):
     parsed = pd.Timestamp(value)
     if pd.isna(parsed) or parsed.tzinfo is None:
@@ -85,7 +79,7 @@ class AnalysisRequest:
     notional: float = 1_000
     fee_rate: float = 0.001
     slippage_bps: float = 5
-    include_fundamentals: bool = True
+    include_fundamentals: bool = False
 
     def __post_init__(self):
         if not isinstance(self.query, str) or not self.query.strip() or len(self.query) > 120 or not self.query.isprintable():
@@ -129,6 +123,9 @@ class CoinAnalysisService:
 
     def analyze(self, request: AnalysisRequest):
         started = self._clock()
+        policy = operator_policy(equity=request.equity, risk_percent=request.risk_percent,
+                                 notional=request.notional, fee_rate=request.fee_rate,
+                                 slippage_bps=request.slippage_bps)
         report = {
             "report_id": str(uuid4()), "engine_version": ENGINE_VERSION,
             "started_at": started.isoformat(), "generated_at": started.isoformat(),
@@ -136,7 +133,8 @@ class CoinAnalysisService:
             "decision": {"action": "INSUFFICIENT_DATA", "bias": "NEUTRAL",
                          "summary": "A verified instrument and complete inputs are required.",
                          "reasons": [], "counter_evidence": [], "blockers": [],
-                         "score": None, "win_probability": None, "validated": False},
+                         "score": None, "win_probability": None, "validated": False,
+                         "manual_review_required": False},
             "technical": {}, "charts": [], "plan": None,
             "liquidity": {"status": "unavailable", "reasons": []},
             "market_context": {"status": "unavailable"},
@@ -144,8 +142,11 @@ class CoinAnalysisService:
             "fundamentals": {"status": "unavailable", "metrics": {}, "sources": [],
                              "events": [], "coverage_gaps": [], "review_required": False},
             "warnings": ["Research rules are unvalidated for profitability; the score is not a win probability.",
-                         "This report does not submit orders or monitor a position after entry."],
+                         "This report does not submit orders or monitor a position after entry.",
+                         "Historical tests do not reproduce live order-book, listing or news evidence."],
+            "policy": policy,
             "inputs": {"request": asdict(request), "strategies": list(STRATEGIES),
+                       "policy": policy,
                        "timeframes": {"context": "4h", "setup": "1h", "entry": "15m"},
                        "candles": {}, "market_snapshots": {}},
         }
@@ -192,7 +193,8 @@ class CoinAnalysisService:
                 report["fundamentals"]["coverage_gaps"] = ["Fundamental providers could not be reached."]
         else:
             report["fundamentals"].update(status="disabled", coverage_gaps=[
-                "Fundamental and event checks were explicitly disabled for this technical-only report."])
+                "Optional fundamental and event context was not requested."])
+        report["fundamentals"]["decision_role"] = "optional_manual_context"
         if request.include_fundamentals and request.exchange != "kucoin":
             report["warnings"].append(
                 "Event coverage is limited to KuCoin announcements; notices from the selected exchange were not checked.")
@@ -203,6 +205,10 @@ class CoinAnalysisService:
                 confirmation_timeframes=("4h",), entry_timeframe="15m", candle_limit=500,
                 account_equity=request.equity, risk_percent=request.risk_percent / 100,
                 min_confirmed_score=70, strategy_names=STRATEGIES,
+                strategy_plan_configs={name: TradePlanConfig(
+                    max_notional_value=request.notional, max_notional_percent=1.0,
+                    min_target_net_rr=1.0, min_blended_net_rr=1.0,
+                ) for name in STRATEGIES},
                 data_fetcher=self.data_fetcher, now=lambda: pd.Timestamp(self._clock()),
                 fee_rate=request.fee_rate, slippage_bps=request.slippage_bps,
             )
@@ -223,32 +229,9 @@ class CoinAnalysisService:
                 "Contract size is checked, but account eligibility, leverage, margin, liquidation and future funding costs are not modeled.")
 
         # Fetch executable-side evidence last, after slower project/context queries.
-        ticker, book = {}, {}
-        for method, target in (("fetch_ticker", ticker), ("fetch_order_book", book)):
-            try:
-                snapshot = getattr(client, method)(symbol)
-                received = self._clock().isoformat()
-                if isinstance(snapshot, dict):
-                    target.update(snapshot)
-                    target["_received_at"] = received
-            except Exception:
-                report["warnings"].append(f"Public {method.removeprefix('fetch_')} retrieval failed.")
-            if method == "fetch_ticker" and not _reported_volume(ticker.get("quoteVolume")):
-                # Some contract ticker endpoints omit 24-hour turnover.  Keep
-                # their live prices/timestamps intact and source volume separately.
-                try:
-                    all_tickers = client.fetch_tickers([symbol])
-                    received = self._clock().isoformat()
-                    volume = all_tickers.get(symbol) if isinstance(all_tickers, dict) else None
-                    if not isinstance(volume, dict):
-                        raise ValueError("A separate volume snapshot is unavailable.")
-                    ticker["_quote_volume_snapshot"] = {
-                        "symbol": volume.get("symbol", symbol), "quoteVolume": volume.get("quoteVolume"),
-                        "timestamp": volume.get("timestamp"), "datetime": volume.get("datetime"),
-                        "_received_at": received, "source_method": "fetch_tickers",
-                    }
-                except Exception:
-                    report["warnings"].append("Separate 24-hour quote-volume retrieval failed.")
+        snapshot = public_market_snapshot(client, symbol, self._clock)
+        ticker, book = snapshot["ticker"], snapshot["order_book"]
+        report["warnings"].extend(snapshot["warnings"])
         now = self._clock()
         liquidity = assess_liquidity(market, ticker, book, request.notional, now)
         report["liquidity"] = liquidity
@@ -294,7 +277,7 @@ class CoinAnalysisService:
             if frame is None or frame.empty:
                 technical["frame_errors"].append(f"Validated {timeframe} candles are unavailable.")
                 continue
-            quality = validate_ohlcv(frame, timeframe=timeframe, min_rows=220)
+            quality = validate_ohlcv(frame, timeframe=timeframe, min_rows=INDICATOR_WINDOW)
             times = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
             delta = pd.Timedelta(timeframe.replace("m", "min"))
             if (not quality.valid or quality.missing_intervals or as_of is None
@@ -302,7 +285,8 @@ class CoinAnalysisService:
                     or times.iloc[-1] + delta != latest_expected_close(as_of, timeframe)):
                 technical["frame_errors"].append(f"{timeframe} candles are invalid or not current at the frozen decision close.")
                 continue
-            data = add_indicators(frame)
+            frame = frame.tail(INDICATOR_WINDOW).copy()
+            data = decision_indicators(frame)
             columns = ["timestamp", "open", "high", "low", "close", "volume"]
             report["inputs"]["candles"][timeframe] = json_safe(frame[columns].to_dict("records"))
             report["charts"].append({"timeframe": timeframe, "as_of": as_of,
@@ -337,9 +321,10 @@ class CoinAnalysisService:
                     return unavailable
                 benchmark = raw.loc[times + pd.Timedelta(hours=1) <= pd.Timestamp(as_of)].copy()
                 benchmark["timestamp"] = times.loc[benchmark.index]
-            quality = validate_ohlcv(benchmark, timeframe="1h", min_rows=220)
+            quality = validate_ohlcv(benchmark, timeframe="1h", min_rows=INDICATOR_WINDOW)
             if not quality.valid or quality.missing_intervals or benchmark.iloc[-1]["timestamp"] + pd.Timedelta(hours=1) != pd.Timestamp(as_of):
                 return unavailable
+            benchmark = benchmark.tail(INDICATOR_WINDOW).copy()
             asset = frames["1h"].set_index("timestamp")["close"]
             btc = benchmark.set_index("timestamp")["close"]
             joined = pd.concat([asset.rename("asset"), btc.rename("benchmark")], axis=1).dropna()
@@ -352,7 +337,7 @@ class CoinAnalysisService:
                 "asset_return_24h_pct": changes["asset"], "benchmark_return_24h_pct": changes["benchmark"],
                 "relative_return_24h_pp": changes["asset"] - changes["benchmark"],
                 "correlation_1h_100": correlation,
-                "benchmark_regime": analyze_market_structure(add_indicators(benchmark)).regime,
+                "benchmark_regime": analyze_market_structure(decision_indicators(benchmark)).regime,
                 "interpretation": "Recent relative performance and correlation are context, not forecasts.",
                 "candles": benchmark[["timestamp", "open", "high", "low", "close", "volume"]].to_dict("records")})
         except Exception:
@@ -378,104 +363,12 @@ class CoinAnalysisService:
         return result
 
     def _plan(self, proposed, request, liquidity, market):
-        if proposed is None:
-            return None, []
-        if not isinstance(proposed, dict):
-            return None, ["The strategy returned an invalid trade plan."]
-        plan = dict(proposed)
-        names = ("reference_entry", "entry_low", "entry_high", "stop_loss", "take_profit_1", "take_profit_2", "position_size")
-        if (not all(_finite(plan.get(name)) and plan[name] > 0 for name in names)
-                or plan.get("signal") not in {"LONG", "SHORT"} or plan.get("status") != "CONFIRMED"):
-            return None, ["The strategy returned an invalid price or size."]
-        direction = 1 if plan["signal"] == "LONG" else -1
-        risk_edge = plan["entry_low"] if direction == 1 else plan["entry_high"]
-        target_edge = plan["entry_high"] if direction == 1 else plan["entry_low"]
-        if (not plan["entry_low"] <= plan["reference_entry"] <= plan["entry_high"]
-                or direction * (risk_edge - plan["stop_loss"]) <= 0
-                or direction * (plan["take_profit_1"] - target_edge) <= 0
-                or direction * (plan["take_profit_2"] - plan["take_profit_1"]) < 0):
-            return None, ["The entry zone, invalidation and targets have inconsistent directional geometry."]
-        fraction = plan.get("take_profit_1_fraction", 0.5)
-        if not _finite(fraction) or not 0 <= fraction < 1:
-            return None, ["The first-target exit allocation must be finite and between zero and one, excluding one."]
-        cancel = plan.get("cancel_price")
-        if cancel is not None and (not _finite(cancel) or cancel <= 0):
-            return None, ["The structural cancellation price is invalid."]
-        observed_slip = [(liquidity.get(side) or {}).get("slippage_bps") for side in ("buy_fill", "sell_fill")]
-        slip_bps = max([request.slippage_bps] + [value for value in observed_slip if _finite(value) and value >= 0])
-        slip = slip_bps / 10_000
-        entry = (plan["entry_high"] if direction == 1 else plan["entry_low"]) * (1 + direction * slip)
-        stop = plan["stop_loss"] * (1 - direction * slip)
-        loss = direction * (entry - stop) + request.fee_rate * (entry + stop)
-        gains = []
-        for target in (plan["take_profit_1"], plan["take_profit_2"]):
-            fill = target * (1 - direction * slip)
-            gains.append(direction * (fill - entry) - request.fee_rate * (entry + fill))
-        # A short's worst risk entry is the low end, but its largest possible
-        # notional is at the high end.  Cap both directions over the whole zone.
-        notional_ceiling = plan["entry_high"] * (1 + slip)
-        notional_floor = plan["entry_low"] * (1 - slip)
-        if (loss <= 0 or not all(math.isfinite(v) for v in [entry, stop, loss, notional_ceiling, notional_floor, *gains])
-                or min(entry, stop, notional_ceiling, notional_floor) <= 0):
-            return None, ["The cost-adjusted trade geometry is invalid."]
-        budget = min(request.notional, request.equity)
-        quantity = min(plan["position_size"], request.equity * request.risk_percent / 100 / loss,
-                       budget / (notional_ceiling * (1 + request.fee_rate)))
-        if not _finite(quantity) or quantity <= 0:
-            return None, ["No finite positive position fits the risk and notional caps."]
-        errors = []
-        blended_rr = (fraction * gains[0] + (1 - fraction) * gains[1]) / loss
-        target_rr = gains[1] / loss
-        if not all(_finite(value) for value in (target_rr, blended_rr)):
-            return None, ["The cost-adjusted reward estimate is outside the supported numeric range."]
-        if gains[0] <= 0 or target_rr < 1 or blended_rr < 1:
-            errors.append("Reward after modeled fees and slippage does not meet the 1R blended-target minimum.")
-        units = quantity
-        if request.market_type == "swap" or market.get("contract") is True:
-            multiplier = market.get("contractSize")
-            if not _finite(multiplier) or multiplier <= 0:
-                return None, ["The contract quantity multiplier is invalid."]
-            units = quantity / multiplier
-            if not _finite(units) or units <= 0:
-                return None, ["The proposed contract count is outside the supported numeric range."]
-        limits = market.get("limits") or {}
-        if not isinstance(limits, dict):
-            return None, ["Exchange order limits are malformed."]
-        for name, minimum_value, maximum_value in (("amount", units, units),
-                ("cost", quantity * notional_floor, quantity * notional_ceiling)):
-            limit = limits.get(name) or {}
-            if not isinstance(limit, dict) or any(
-                    value is not None and (not _finite(value) or value < 0)
-                    for value in (limit.get("min"), limit.get("max"))):
-                return None, [f"The exchange {name} limits are malformed."]
-            if _finite(limit.get("min")) and minimum_value < limit["min"]:
-                errors.append(f"The risk-capped position is below the exchange minimum {name}.")
-            if _finite(limit.get("max")) and maximum_value > limit["max"]:
-                errors.append(f"The position exceeds the exchange maximum {name}.")
-        distance = direction * (plan["reference_entry"] - plan["stop_loss"])
-        plan.update(position_size=quantity, position_size_base=quantity,
-                    notional_value=quantity * plan["reference_entry"],
-                    reference_price_risk_amount=quantity * distance,
-                    actual_risk_amount=quantity * loss, estimated_loss_at_stop=quantity * loss,
-                    target_risk_amount=request.equity * request.risk_percent / 100,
-                    reward_to_risk_1=direction * (plan["take_profit_1"] - plan["reference_entry"]) / distance,
-                    reward_to_risk_2=direction * (plan["take_profit_2"] - plan["reference_entry"]) / distance,
-                    net_reward_to_risk=target_rr,
-                    blended_target_net_reward_to_risk=blended_rr, contract_count_estimate=units if request.market_type == "swap" else None,
-                    execution_supported=False, exchange_precision_applied=False,
-                    entry_condition="All gates pass, the report is unexpired, and the executable price remains inside the entry zone.",
-                    cancel_conditions=["Price reaches structural invalidation or a target before entry.",
-                                       "The report expires, a new 1h decision is due, or data/liquidity/event gates fail.",
-                                       "Price leaves the entry zone; wait for a fresh analysis instead of chasing."],
-                    costs={"fee_rate_per_side": request.fee_rate, "slippage_bps_per_side": slip_bps,
-                           "requested_slippage_bps": request.slippage_bps, "worst_modeled_entry": entry,
-                           "modeled_stop_fill": stop, "loss_per_base_unit": loss,
-                           "notional_cap": budget, "maximum_entry_notional": quantity * notional_ceiling,
-                           "estimated_loss_at_stop": quantity * loss,
-                           "limitations": ["Fees are user assumptions, not verified account fee tiers.",
-                                           "Depth is one snapshot; stop gaps, future slippage and funding can increase losses.",
-                                           "Size is an estimate in base units; exchange amount precision is not applied."]})
-        return plan, errors
+        return revalidate_trade_plan(
+            proposed, account_equity=request.equity, risk_percent=request.risk_percent / 100,
+            notional_cap=request.notional, fee_rate=request.fee_rate,
+            slippage_bps=request.slippage_bps, market_type=request.market_type,
+            liquidity=liquidity, market=market, min_target_net_rr=1, min_blended_net_rr=1,
+        )
 
     def _decision(self, report, scan, plan_errors, request):
         decision, technical, liquidity = report["decision"], report["technical"], report["liquidity"]
@@ -540,7 +433,10 @@ class CoinAnalysisService:
         fundamentals = report["fundamentals"]
         if request.include_fundamentals:
             if fundamentals.get("review_required"):
-                wait_blocks.append("A matching critical project or exchange event requires review.")
+                decision["manual_review_required"] = True
+                decision["counter_evidence"].append("A matching critical project or exchange event requires manual review.")
+                report["warnings"].append(
+                    "Critical event evidence is manual context. The technical policy and its historical results do not evaluate this event.")
             now = self._clock()
 
             def recent_source(source, max_observation_age=None):
@@ -561,10 +457,10 @@ class CoinAnalysisService:
             identity = fundamentals.get("identity") or {}
             if (not isinstance(identity, dict) or identity.get("symbol") != report["instrument"]["base"]
                     or not identity.get("coingecko_id") or not source_ok):
-                wait_blocks.append("Fresh, identity-verified project evidence is unavailable.")
+                report["warnings"].append("Fresh, identity-verified optional project evidence is unavailable.")
             if not any(source.get("provider") == "KuCoin announcements"
                        and source.get("status") in {"ok", "partial"} and recent_source(source) for source in sources):
-                wait_blocks.append("The required KuCoin announcement check is unavailable or stale.")
+                report["warnings"].append("Optional KuCoin announcement context is unavailable or stale.")
         decision["counter_evidence"].extend(fundamentals.get("risk_flags", []))
         report["warnings"].extend(fundamentals.get("coverage_gaps", []))
         plan = report["plan"]

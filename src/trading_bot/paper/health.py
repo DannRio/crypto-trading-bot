@@ -6,15 +6,18 @@ import math
 from pathlib import Path
 import sqlite3
 
+from trading_bot.paper.locking import writer_active
+
 
 def paper_health(journal: str | Path, max_age_seconds: float = 1800,
                  now: datetime | None = None) -> dict:
     if not math.isfinite(max_age_seconds) or max_age_seconds <= 0:
         raise ValueError("max_age_seconds must be finite and positive.")
     path = Path(journal).expanduser().resolve()
-    result = {"healthy": False, "status": "missing", "journal": str(path)}
+    result = {"healthy": False, "status": "missing", "journal": str(path), "writer_active": False}
     if not path.is_file():
         return result
+    result["writer_active"] = writer_active(path)
     try:
         # mode=ro prevents a status request from creating or changing a journal.
         connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5)
@@ -46,6 +49,12 @@ def paper_health(journal: str | Path, max_age_seconds: float = 1800,
         if age > max_age_seconds:
             return dict(result, status="stale")
         status = heartbeat.get("status", "unknown")
+        owned = result["writer_active"]
+        if status in {"ok", "running"}:
+            if owned is None:
+                return dict(result, status="ownership_unknown")
+            if not owned:
+                return dict(result, status="stopped")
         healthy = status == "ok" or (
             status == "running" and heartbeat.get("last_cycle_result") == "ok"
         )
@@ -56,7 +65,7 @@ def paper_health(journal: str | Path, max_age_seconds: float = 1800,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("--journal", default="data/paper/continuous_paper.db")
+    parser.add_argument("--journal", default="data/paper/core_paper.db")
     parser.add_argument("--max-age-seconds", type=float, default=1800)
     args = parser.parse_args(argv)
     try:
