@@ -230,6 +230,11 @@ class FakeLiveExchange:
         }
 
 
+def live_test_now():
+    # Keep valid fixture intents independent of the day the suite runs.
+    return pd.Timestamp("2026-11-09T12:05:00Z")
+
+
 def approved_intent():
     return TradeIntent(
         intent_id="intent-live-1",
@@ -376,10 +381,8 @@ def test_managed_live_adapter_is_idempotent_and_attaches_protection(
         store=store,
         guard=guard,
         credential_provider=StaticCredentialProvider(),
+        now_fn=live_test_now,
         exchange_factory=lambda config: exchange,
-        now_fn=lambda: pd.Timestamp(
-            "2026-11-09T12:05:00Z"
-        ),
     )
 
     first = broker.execute(
@@ -414,6 +417,37 @@ def test_managed_live_adapter_is_idempotent_and_attaches_protection(
     store.close()
 
 
+@pytest.mark.parametrize("seconds_after_expiry", [0, 1])
+def test_live_adapter_rejects_intent_at_or_after_expiry(
+    monkeypatch,
+    tmp_path,
+    seconds_after_expiry,
+):
+    monkeypatch.setenv("TRADING_LIVE_EXECUTION", "ENABLED")
+    store = OrderStore(tmp_path / "orders.db")
+    store.bind_execution_context(exchange_id="kucoin", market_type="spot")
+    guard = LiveExecutionGuard(store)
+    guard.arm(actor="Danny", confirmation="ARM_LIVE")
+    exchange = FakeLiveExchange()
+    intent = approved_intent()
+    broker = ManagedLiveBrokerAdapter(
+        exchange_id="kucoin",
+        market_type="spot",
+        store=store,
+        guard=guard,
+        credential_provider=StaticCredentialProvider(),
+        exchange_factory=lambda config: exchange,
+        now_fn=lambda: intent.expires_at + pd.Timedelta(seconds=seconds_after_expiry),
+    )
+
+    with pytest.raises(ValueError, match="expired before live submission"):
+        broker.execute(intent)
+
+    assert exchange.create_calls == 0
+    assert store.get_by_intent(intent.intent_id) is None
+    store.close()
+
+
 def test_partial_fill_reconciliation_updates_local_state(
     monkeypatch,
     tmp_path,
@@ -439,6 +473,7 @@ def test_partial_fill_reconciliation_updates_local_state(
         store=store,
         guard=guard,
         credential_provider=StaticCredentialProvider(),
+        now_fn=live_test_now,
         exchange_factory=lambda config: exchange,
     )
     receipt = broker.execute(
@@ -533,6 +568,7 @@ def test_kill_switch_halts_first_and_cancels_open_orders(
         store=store,
         guard=guard,
         credential_provider=StaticCredentialProvider(),
+        now_fn=live_test_now,
         exchange_factory=lambda config: exchange,
     )
     broker.execute(
@@ -610,6 +646,7 @@ def test_live_adapter_refuses_unprotected_entry(
         store=store,
         guard=guard,
         credential_provider=StaticCredentialProvider(),
+        now_fn=live_test_now,
         exchange_factory=lambda config: NoProtectionExchange(
             config
         ),
@@ -681,10 +718,8 @@ def test_live_timeout_reconciles_original_order_without_duplicate(
         store=store,
         guard=guard,
         credential_provider=StaticCredentialProvider(),
+        now_fn=live_test_now,
         exchange_factory=lambda config: exchange,
-        now_fn=lambda: pd.Timestamp(
-            "2026-11-09T12:05:00Z"
-        ),
     )
 
     with pytest.raises(TimeoutError):
@@ -820,6 +855,7 @@ def test_live_adapter_refuses_market_without_client_order_id(
         store=store,
         guard=guard,
         credential_provider=StaticCredentialProvider(),
+        now_fn=live_test_now,
         exchange_factory=lambda config: exchange,
     )
 

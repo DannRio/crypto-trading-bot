@@ -27,6 +27,10 @@ _LIQUID = {
     "strategies": "trend_continuation_v2", "fee_rate": 0.001,
     "slippage_bps": 5.0, "interval_seconds": 60.0,
     "universe_refresh_seconds": 900.0,
+    "max_open_risk_percent": 3.0, "max_symbol_risk_percent": 1.0,
+    "max_gross_notional_percent": 100.0, "max_positions": 5,
+    "max_pending_orders": 10, "max_correlated_risk_percent": 2.0,
+    "allow_missing_correlation_data": False,
 }
 _PROFILES = {
     "liquid-spot": ConfigurationProfile(

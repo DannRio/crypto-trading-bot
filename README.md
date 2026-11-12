@@ -2,6 +2,14 @@
 
 A Python engine for scanning crypto markets, producing rule-qualified trade setups, sizing risk, and backtesting strategies across CCXT-supported exchanges.
 
+**v0.17: broader market coverage.** The scanner and paper daemon discover liquid markets when no manual symbols are supplied. The dashboard starts in automatic mode. Shared presets cover up to 30 or 50 qualifying assets, with configurable coverage up to 100 in the dashboard. Frozen research universes, per-asset error reporting, historical MTF/intrabar batch runs, resilient paper management and Docker packaging are documented in [Multi-asset development and operation](docs/MULTI_ASSET_V017.md).
+
+```bash
+crypto-engine --profile broad-spot --exchange kraken --quote-currencies USD
+```
+
+The preset thresholds are starting research assumptions, not optimized parameters or evidence of profitability. The default CLI strategy is now `trend_continuation_v2`; `trend_continuation` remains available as the legacy comparison.
+
 ## Current capabilities
 
 - Universal public market-data access through CCXT.

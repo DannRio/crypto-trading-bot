@@ -72,3 +72,26 @@ jobs:
       - name: Container logs
         if: always()
         run: docker logs crypto-dashboard || true
+
+  dashboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install browser test runtime
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Verify dashboard interactions with synthetic API fixtures
+        run: python tests/browser/dashboard_smoke.py
+      - name: Preserve browser failure screenshot
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-failure
+          path: dashboard-smoke-failure.png
+          if-no-files-found: ignore
+          retention-days: 7
