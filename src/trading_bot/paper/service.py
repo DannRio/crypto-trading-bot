@@ -931,6 +931,7 @@ class PaperTradingService:
         )
         self._persist_heartbeat(
             status="degraded" if self._universe_error or management_errors or scan_errors else "ok",
+            last_cycle_result="degraded" if self._universe_error or management_errors or scan_errors else "ok",
             last_cycle_finished_at=self._utc_timestamp(),
             last_cycle_error=None,
         )
@@ -951,6 +952,7 @@ class PaperTradingService:
             except Exception as exc:
                 self._persist_heartbeat(
                     status="error",
+                    last_cycle_result="error",
                     last_cycle_finished_at=self._utc_timestamp(),
                     last_cycle_error=f"{type(exc).__name__}: {exc}",
                 )

@@ -46,7 +46,10 @@ def paper_health(journal: str | Path, max_age_seconds: float = 1800,
         if age > max_age_seconds:
             return dict(result, status="stale")
         status = heartbeat.get("status", "unknown")
-        return dict(result, healthy=status in {"ok", "running"}, status=status)
+        healthy = status == "ok" or (
+            status == "running" and heartbeat.get("last_cycle_result") == "ok"
+        )
+        return dict(result, healthy=healthy, status=status)
     except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
         return dict(result, status="error", error=str(exc))
 

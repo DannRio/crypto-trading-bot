@@ -13,7 +13,8 @@ NOW = datetime(2026, 11, 1, 12, tzinfo=timezone.utc)
 def heartbeat(path, status="ok", finished=NOW, **extra):
     connection = sqlite3.connect(path)
     connection.execute("CREATE TABLE paper_service_metadata (key TEXT PRIMARY KEY, value TEXT)")
-    payload = {"status": status, "last_cycle_finished_at": finished.isoformat(), **extra}
+    payload = {"status": status, "last_cycle_finished_at": finished.isoformat(),
+               "last_cycle_result": "ok" if status == "running" else status, **extra}
     connection.execute("INSERT INTO paper_service_metadata VALUES (?, ?)", ("heartbeat", json.dumps(payload)))
     connection.commit()
     connection.close()
@@ -40,6 +41,15 @@ def test_fresh_process_with_stale_completed_cycle_is_unhealthy(tmp_path):
     path = tmp_path / "paper.db"
     heartbeat(path, status="running", finished=NOW - timedelta(hours=1), last_cycle_started_at=NOW.isoformat())
     assert paper_health(path, max_age_seconds=300, now=NOW)["status"] == "stale"
+
+
+@pytest.mark.parametrize("previous_result", ["degraded", "error", None])
+def test_starting_another_cycle_cannot_erase_previous_failure(tmp_path, previous_result):
+    path = tmp_path / "paper.db"
+    heartbeat(path, status="running", last_cycle_result=previous_result)
+    result = paper_health(path, now=NOW)
+    assert result["status"] == "running"
+    assert result["healthy"] is False
 
 
 @pytest.mark.parametrize("age", [float("nan"), float("inf"), 0, -1])
