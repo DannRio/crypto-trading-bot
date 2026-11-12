@@ -3,7 +3,8 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    TRADING_HISTORY_ROOT=/app/data/history
+    TRADING_HISTORY_ROOT=/app/data/history \
+    TRADING_ANALYSIS_DB=/app/data/analysis/reports.db
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src

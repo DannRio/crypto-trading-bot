@@ -5,17 +5,24 @@ Bind locally (127.0.0.1); this development API has no user authentication.
 """
 from dataclasses import asdict, is_dataclass
 from enum import Enum
+from functools import lru_cache
 import json
 import logging
 import math
 import os
 from pathlib import Path
 import re
+from typing import Literal
+from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
 import pandas as pd
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+from trading_bot.analysis.service import AnalysisRequest, CoinAnalysisService
 
 from trading_bot.assisted import (
     AssistedTradingService,
@@ -47,13 +54,14 @@ from trading_bot.strategies import normalize_strategy_names
 from trading_bot.scanner.multi_timeframe import validate_confirmation_timeframes, validate_entry_timeframe
 
 log = logging.getLogger(__name__)
-app = FastAPI(title="Trading Bot — Research & Assisted Dashboard", version="0.17.0")
+app = FastAPI(title="Trading Bot — Research & Assisted Dashboard", version="0.18.0")
 
 EXCHANGES = {"kraken", "kucoin", "binance", "bybit", "okx", "coinbase"}
 MARKET_TYPES = {"spot", "swap", "future"}
 TIMEFRAMES = {"5m", "15m", "1h", "4h", "1d"}
 SYMBOL_RE = re.compile(r"^[A-Z0-9._-]+/[A-Z0-9._-]+(?::[A-Z0-9._-]+)?$")
 PAGE = Path(__file__).with_name("index.html")
+COIN_PAGE = Path(__file__).with_name("coin.html")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -121,6 +129,81 @@ class StageIntentRequest(BaseModel):
 class IntentDecisionRequest(BaseModel):
     actor: str
     note: str = ""
+
+
+class CoinAnalysisRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, strict=True)
+
+    query: str = Field(min_length=1, max_length=120)
+    exchange: Literal["kucoin", "kraken", "binance", "bybit", "okx", "coinbase"] = "kucoin"
+    market_type: Literal["spot", "swap"] = "spot"
+    quote: Literal["USD", "USDT", "USDC"] = "USDT"
+    equity: float = Field(10_000, ge=1, le=1e9)
+    risk_percent: float = Field(0.25, ge=0.01, le=5)
+    notional: float = Field(1_000, ge=1, le=1e8)
+    fee_rate: float = Field(0.001, ge=0, le=0.05)
+    slippage_bps: float = Field(5, ge=0, le=500)
+    include_fundamentals: bool = True
+
+
+@lru_cache(maxsize=1)
+def _analysis_service():
+    return CoinAnalysisService()
+
+
+@app.exception_handler(RequestValidationError)
+async def analysis_validation_error(request, exc):
+    if request.url.path == "/api/analyze":
+        # Strict JSON errors must not echo NaN/Infinity or unexpected secret
+        # fields supplied by a caller. Preserve existing route behavior.
+        return JSONResponse(status_code=422, content={"detail": [
+            {key: error[key] for key in ("type", "loc", "msg") if key in error}
+            for error in exc.errors()
+        ]})
+    return await request_validation_exception_handler(request, exc)
+
+
+@app.get("/analyze")
+def coin_analysis_page():
+    return FileResponse(COIN_PAGE)
+
+
+@app.post("/api/analyze")
+def analyze_coin(request: CoinAnalysisRequest):
+    try:
+        parameters = AnalysisRequest(**request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    try:
+        return _analysis_service().analyze(parameters)
+    except Exception as exc:
+        log.error("Coin analysis unavailable (%s).", type(exc).__name__)
+        raise HTTPException(503, "Analysis or journal persistence is unavailable; no signal was issued.") from exc
+
+
+@app.get("/api/analysis/history")
+def analysis_history(limit: int = Query(25, ge=1, le=500)):
+    try:
+        return {"reports": _analysis_service().journal.history(limit)}
+    except Exception as exc:
+        log.error("Analysis history unavailable (%s).", type(exc).__name__)
+        raise HTTPException(503, "Verified analysis history is unavailable.") from exc
+
+
+@app.get("/api/analysis/reports/{report_id}")
+def analysis_report(report_id: str):
+    try:
+        canonical = str(UUID(report_id))
+    except ValueError as exc:
+        raise HTTPException(422, "A valid analysis report ID is required.") from exc
+    try:
+        report = _analysis_service().journal.get(canonical)
+    except Exception as exc:
+        log.error("Analysis report unavailable (%s).", type(exc).__name__)
+        raise HTTPException(503, "The saved analysis could not be verified.") from exc
+    if report is None:
+        raise HTTPException(404, "Analysis report not found.")
+    return report
 
 
 def _safe(value):

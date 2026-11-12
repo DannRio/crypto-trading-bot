@@ -76,6 +76,18 @@ class MarketScanner:
         self._decision_close = None
         self._frame_cache = {}
 
+    def decision_frames(self) -> dict[str, pd.DataFrame]:
+        """Return copies of the exact validated candles used by the latest scan.
+
+        Charting consumers must not refetch newer candles and imply they were
+        available to the frozen multi-timeframe decision.
+        """
+        return {
+            timeframe: frame.copy(deep=True)
+            for (_, timeframe), (frame, _, error) in self._frame_cache.items()
+            if error is None and frame is not None
+        }
+
     def _fetch_closed(
         self,
         symbol: str,

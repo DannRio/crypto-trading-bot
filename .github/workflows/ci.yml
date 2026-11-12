@@ -54,6 +54,7 @@ jobs:
           docker run --rm crypto-bot:ci crypto-engine --help
           docker run --rm crypto-bot:ci crypto-paper daemon --help
           docker run --rm crypto-bot:ci crypto-research universe --help
+          docker run --rm crypto-bot:ci crypto-analyze --help
           docker run --detach --name crypto-dashboard --publish 127.0.0.1:8000:8000 crypto-bot:ci
           python - <<'PY'
           import json, time, urllib.request
@@ -68,6 +69,8 @@ jobs:
               raise SystemExit('Dashboard did not become healthy')
           with urllib.request.urlopen('http://127.0.0.1:8000/api/profiles') as response:
               assert len(json.load(response)['profiles']) == 3
+          with urllib.request.urlopen('http://127.0.0.1:8000/analyze') as response:
+              assert 'Analyze' in response.read().decode()
           PY
       - name: Container logs
         if: always()
@@ -87,11 +90,15 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Verify dashboard interactions with synthetic API fixtures
         run: python tests/browser/dashboard_smoke.py
-      - name: Preserve browser failure screenshot
+      - name: Verify coin analysis with synthetic API fixtures
+        run: python tests/browser/coin_analysis_smoke.py
+      - name: Preserve browser failure screenshots
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: dashboard-failure
-          path: dashboard-smoke-failure.png
+          path: |
+            dashboard-smoke-failure.png
+            coin-analysis-smoke-failure.png
           if-no-files-found: ignore
           retention-days: 7

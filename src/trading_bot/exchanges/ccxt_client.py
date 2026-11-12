@@ -58,6 +58,38 @@ class CCXTClient:
         with self._request_lock:
             return self.exchange.fetch_ticker(symbol)
 
+    def fetch_currencies(self):
+        if not self.supports("fetchCurrencies"):
+            raise NotImplementedError(
+                f"{self.exchange_id} does not support fetchCurrencies."
+            )
+        with self._request_lock:
+            return self.exchange.fetch_currencies()
+
+    def fetch_order_book(self, symbol: str, limit: int | None = None):
+        if not self.supports("fetchOrderBook"):
+            raise NotImplementedError(
+                f"{self.exchange_id} does not support fetchOrderBook."
+            )
+        with self._request_lock:
+            return self.exchange.fetch_order_book(symbol, limit=limit)
+
+    def fetch_funding_rate(self, symbol: str):
+        if not self.supports("fetchFundingRate"):
+            raise NotImplementedError(
+                f"{self.exchange_id} does not support fetchFundingRate."
+            )
+        with self._request_lock:
+            return self.exchange.fetch_funding_rate(symbol)
+
+    def fetch_open_interest(self, symbol: str):
+        if not self.supports("fetchOpenInterest"):
+            raise NotImplementedError(
+                f"{self.exchange_id} does not support fetchOpenInterest."
+            )
+        with self._request_lock:
+            return self.exchange.fetch_open_interest(symbol)
+
     def fetch_tickers(
         self,
         symbols: list[str] | None = None,

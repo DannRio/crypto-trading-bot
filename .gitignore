@@ -24,6 +24,7 @@ data/paper/*
 data/assisted/*
 data/orders/*
 data/alerts/*
+data/analysis/*
 
 # Keep the legacy folder structure in Git
 !data/raw/.gitkeep

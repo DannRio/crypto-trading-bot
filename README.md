@@ -2,6 +2,14 @@
 
 A Python engine for scanning crypto markets, producing rule-qualified trade setups, sizing risk, and backtesting strategies across CCXT-supported exchanges.
 
+**v0.18: analyze one coin by name.** Open `/analyze` in the local dashboard, or run `crypto-analyze "Bitcoin"`. The workflow resolves the exchange's exact instrument, combines the existing 4h → 1h → 15m technical rules with current liquidity and sourced project/event evidence, and saves an immutable report with conditional entries, exits, cost assumptions, and expiry. KuCoin is the default; perpetuals use its separate futures adapter. See [Coin analysis: operation, evidence, and limits](docs/COIN_ANALYSIS.md).
+
+```bash
+python -m pip install -e ".[web]"
+python -m uvicorn trading_bot.web.app:app --host 127.0.0.1 --port 8000
+# Open http://127.0.0.1:8000/analyze
+```
+
 **v0.17: broader market coverage.** The scanner and paper daemon discover liquid markets when no manual symbols are supplied. The dashboard starts in automatic mode. Shared presets cover up to 30 or 50 qualifying assets, with configurable coverage up to 100 in the dashboard. Frozen research universes, per-asset error reporting, historical MTF/intrabar batch runs, resilient paper management and Docker packaging are documented in [Multi-asset development and operation](docs/MULTI_ASSET_V017.md).
 
 ```bash
@@ -28,6 +36,9 @@ The preset thresholds are starting research assumptions, not optimized parameter
 - Batch research across multiple symbols and timeframes.
 - Local research dashboard with dry-run assisted approval plus read-only live-execution status.
 - Guarded operator-only live spot execution through the `crypto-execution` CLI; disabled by default.
+- Coin/name/pair lookup with explicit ambiguity handling and quote/order-book checks for manually requested assets.
+- Sourced project supply/valuation, bounded KuCoin event coverage, and protocol metrics where identity can be verified.
+- Annotated candle charts, conditional LONG/SHORT/WAIT decisions, expiring reports, and a persistent analysis journal.
 
 Live order submission exists only behind the guarded operator CLI. It is disabled by default, is not connected to the scanner automatically, and currently permits spot LONG entries only when every execution gate passes.
 
