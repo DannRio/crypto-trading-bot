@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import asdict
 import sqlite3
 
 import pandas as pd
@@ -136,6 +137,9 @@ class PaperJournal:
             "TEXT NOT NULL DEFAULT 'trend_continuation'",
         )
         order_columns = {
+            "event_id": "TEXT", "setup_type": "TEXT NOT NULL DEFAULT 'legacy_state'",
+            "cancel_price": "REAL", "break_even_mode": "TEXT NOT NULL DEFAULT 'price'",
+            "risk_budget": "REAL NOT NULL DEFAULT 0",
             "entry_low": "REAL NOT NULL DEFAULT 0",
             "entry_high": "REAL NOT NULL DEFAULT 0",
             "take_profit_1_fraction": "REAL NOT NULL DEFAULT 0.5",
@@ -160,6 +164,8 @@ class PaperJournal:
             "tp1_hit",
             "INTEGER NOT NULL DEFAULT 0",
         )
+        self._ensure_column("paper_trades", "event_id", "TEXT")
+        self._ensure_column("paper_trades", "setup_type", "TEXT NOT NULL DEFAULT 'legacy_state'")
         self.connection.commit()
 
     def _ensure_column(
@@ -187,76 +193,22 @@ class PaperJournal:
         return pd.Timestamp(value).isoformat()
 
     def save_order(self, order: PaperOrder) -> None:
+        values = asdict(order)
+        for key in ("signal", "status"):
+            values[key] = values[key].value
+        for key in ("created_at", "filled_at", "closed_at"):
+            values[key] = self._timestamp(values[key])
+        columns = list(values)
+        updates = ", ".join(f"{key}=excluded.{key}" for key in columns if key != "order_id")
         self.connection.execute(
-            """
-            INSERT INTO paper_orders (
-                order_id, symbol, timeframe, signal, status,
-                created_at, reference_entry, entry_low, entry_high,
-                stop_loss, take_profit_1, take_profit_2, position_size,
-                planned_risk, score, regime, strategy,
-                bars_remaining, filled_at, fill_price, entry_fee,
-                closed_at, exit_price, exit_reason,
-                take_profit_1_fraction,
-                move_stop_to_break_even_after_tp1,
-                tp1_hit, remaining_size, realized_gross_pnl,
-                realized_exit_fees, realized_exit_value, effective_stop
-            )
-            VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            )
-            ON CONFLICT(order_id) DO UPDATE SET
-                status=excluded.status,
-                bars_remaining=excluded.bars_remaining,
-                filled_at=excluded.filled_at,
-                fill_price=excluded.fill_price,
-                entry_fee=excluded.entry_fee,
-                closed_at=excluded.closed_at,
-                exit_price=excluded.exit_price,
-                exit_reason=excluded.exit_reason,
-                tp1_hit=excluded.tp1_hit,
-                remaining_size=excluded.remaining_size,
-                realized_gross_pnl=excluded.realized_gross_pnl,
-                realized_exit_fees=excluded.realized_exit_fees,
-                realized_exit_value=excluded.realized_exit_value,
-                effective_stop=excluded.effective_stop
-            """,
-            (
-                order.order_id,
-                order.symbol,
-                order.timeframe,
-                order.signal.value,
-                order.status.value,
-                self._timestamp(order.created_at),
-                order.reference_entry,
-                order.entry_low,
-                order.entry_high,
-                order.stop_loss,
-                order.take_profit_1,
-                order.take_profit_2,
-                order.position_size,
-                order.planned_risk,
-                order.score,
-                order.regime,
-                order.strategy,
-                order.bars_remaining,
-                self._timestamp(order.filled_at),
-                order.fill_price,
-                order.entry_fee,
-                self._timestamp(order.closed_at),
-                order.exit_price,
-                order.exit_reason,
-                order.take_profit_1_fraction,
-                int(order.move_stop_to_break_even_after_tp1),
-                int(order.tp1_hit),
-                order.remaining_size,
-                order.realized_gross_pnl,
-                order.realized_exit_fees,
-                order.realized_exit_value,
-                order.effective_stop,
-            ),
-        )
+            f"INSERT INTO paper_orders ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) "
+            f"ON CONFLICT(order_id) DO UPDATE SET {updates}", tuple(values.values()))
         self.connection.commit()
+
+    def has_setup_event(self, symbol, timeframe, event_id):
+        return self.connection.execute(
+            "SELECT 1 FROM paper_orders WHERE symbol=? AND timeframe=? AND event_id=? LIMIT 1",
+            (symbol, timeframe, event_id)).fetchone() is not None
 
     def save_trade(self, trade: PaperTrade) -> None:
         self.connection.execute(
@@ -266,10 +218,10 @@ class PaperJournal:
                 entry_time, exit_time, entry_price, exit_price,
                 position_size, gross_pnl, fees, net_pnl,
                 risk_amount, r_multiple, exit_reason, score, regime,
-                strategy, tp1_hit
+                strategy, tp1_hit, event_id, setup_type
             )
             VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -291,7 +243,7 @@ class PaperJournal:
                 trade.score,
                 trade.regime,
                 trade.strategy,
-                int(trade.tp1_hit),
+                int(trade.tp1_hit), trade.event_id, trade.setup_type,
             ),
         )
         self.connection.commit()

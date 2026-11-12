@@ -3,6 +3,7 @@ import pandas as pd
 from trading_bot.analysis.market_structure import MarketStructure
 from trading_bot.core.enums import MarketRegime, Signal, SetupStatus
 from trading_bot.strategies.models import SetupAssessment
+from trading_bot.strategies.events import attach_event
 
 
 STRATEGY_NAME = "breakout_retest"
@@ -45,57 +46,44 @@ def evaluate_breakout_retest(
     if latest[list(required)].isna().any():
         return _no_trade("Latest breakout/retest data is incomplete.")
 
-    prior = df.iloc[
-        -(breakout_lookback + retest_window + 1):
-        -(retest_window + 1)
-    ]
-    breakout_window = df.iloc[-(retest_window + 1):-1]
-
-    upper_level = float(prior["high"].max())
-    lower_level = float(prior["low"].min())
+    if breakout_lookback < 2 or retest_window < 1:
+        raise ValueError("Invalid breakout/retest lookbacks.")
+    latest = df.iloc[-1]
     atr = float(latest["atr_14"])
-    close = float(latest["close"])
-    low = float(latest["low"])
-    high = float(latest["high"])
+    close, low, high = (float(latest[k]) for k in ("close", "low", "high"))
     rsi = float(latest["rsi_14"])
-
     if atr <= 0:
         return _no_trade("ATR is not usable for breakout/retest analysis.")
 
-    long_breakout_rows = breakout_window[
-        breakout_window["close"] > upper_level
-    ]
-    short_breakout_rows = breakout_window[
-        breakout_window["close"] < lower_level
-    ]
-
-    has_long = not long_breakout_rows.empty
-    has_short = not short_breakout_rows.empty
-    if has_long == has_short:
-        return _no_trade(
-            "No unambiguous recent breakout requiring a retest."
-        )
-
-    if has_long:
-        signal = Signal.LONG
-        level = upper_level
-        breakout_row = long_breakout_rows.iloc[-1]
-        retest_touched = (
-            (level - 0.75 * atr)
-            <= low
-            <= (level + 0.50 * atr)
-        )
-        retest_held = close >= level
+    events = []
+    for index in range(len(df) - retest_window - 1, len(df) - 1):
+        prior = df.iloc[index - breakout_lookback:index]
+        row = df.iloc[index]
+        upper, lower = float(prior["high"].max()), float(prior["low"].min())
+        breakout_atr = float(row.get("atr_14", atr))
+        if float(row["close"]) > upper + 0.15 * breakout_atr:
+            events.append((index, Signal.LONG, upper, row))
+        elif float(row["close"]) < lower - 0.15 * breakout_atr:
+            events.append((index, Signal.SHORT, lower, row))
+    if not events or len({item[1] for item in events}) != 1:
+        return _no_trade("No unambiguous fresh breakout requiring a retest.")
+    # The first breach owns the thesis; later bars cannot move its anchor.
+    breakout_index, signal, level, breakout_row = events[0]
+    since_breakout = df.iloc[breakout_index + 1:]
+    if signal == Signal.LONG:
+        held_path = bool((since_breakout["close"] >= level).all())
+        retest_touched = level - 0.75 * atr <= low <= level + 0.50 * atr
+        retest_held = close >= level and close > float(latest["open"])
+        regime_ok = structure.regime != MarketRegime.BEAR_TREND
+        invalidation = min(level, low) - 0.25 * atr
     else:
-        signal = Signal.SHORT
-        level = lower_level
-        breakout_row = short_breakout_rows.iloc[-1]
-        retest_touched = (
-            (level - 0.50 * atr)
-            <= high
-            <= (level + 0.75 * atr)
-        )
-        retest_held = close <= level
+        held_path = bool((since_breakout["close"] <= level).all())
+        retest_touched = level - 0.50 * atr <= high <= level + 0.75 * atr
+        retest_held = close <= level and close < float(latest["open"])
+        regime_ok = structure.regime != MarketRegime.BULL_TREND
+        invalidation = max(level, high) + 0.25 * atr
+    if not (held_path and retest_touched and retest_held and regime_ok):
+        return _no_trade("Retest must touch, reject and hold the original breakout level; scores cannot override failure.")
 
     score = 35
     reasons = [
@@ -158,7 +146,7 @@ def evaluate_breakout_retest(
         status = SetupStatus.NO_TRADE
         signal = Signal.NO_TRADE
 
-    return SetupAssessment(
+    assessment = SetupAssessment(
         signal=signal,
         status=status,
         score=score,
@@ -166,3 +154,8 @@ def evaluate_breakout_retest(
         reasons=tuple(reasons),
         strategy=STRATEGY_NAME,
     )
+    if status == SetupStatus.NO_TRADE:
+        return assessment
+    return attach_event(assessment, df, setup_type="breakout_retest", anchor=level,
+                        invalidation=invalidation, event_index=breakout_index,
+                        cancel=level)

@@ -7,7 +7,7 @@
 - [x] Existing prototype migrated without regression
 - [x] CLI entry point
 - [x] Read-only web dashboard
-- [ ] Central configuration profiles
+- [x] Central configuration profiles shared by scanner, dashboard and paper daemon
 
 ## Phase 2 — Market Data
 - [x] Historical bulk-data loader
@@ -17,6 +17,8 @@
 - [x] Timestamp normalization
 - [x] Multi-exchange data interface
 - [x] Dynamic liquid-market universe
+- [x] Listing refresh, bounded ticker fallback, unique-base coverage and strict closed-history preflight
+- [x] Shared public exchange clients and rate limiting
 
 ## Phase 3 — Market Analysis
 - [x] EMA
@@ -60,6 +62,8 @@
 - [x] Spot long-only research enforcement
 - [x] Multiple years of local historical data
 - [x] Multiple-asset batch research
+- [x] Frozen universe snapshots with selection provenance and immutable file/checksum checks
+- [x] Per-asset data coverage/error reporting and historical MTF/intrabar batch wiring
 - [x] Train / validation / out-of-sample testing
 - [x] Fixed-parameter walk-forward stability testing
 - [x] Train-only parameter experiment registry
@@ -86,6 +90,9 @@
 - [x] Paper-vs-backtest execution comparison
 - [x] Restart-persistent portfolio risk state
 - [x] Manual guarded risk-halt reset
+- [x] Management-only operation during universe discovery outages
+- [x] Universe refresh cache, heartbeat health probe and configuration compatibility checks
+- [x] Shared cycle clock and strict closed-candle validation
 
 ## Phase 9 — Assisted Trading
 - [x] Immutable server-generated trade-intent queue
@@ -114,4 +121,9 @@
 - [ ] Automated scanner → live execution daemon
 - [ ] WebSocket market data
 - [ ] Continuous execution monitoring / alerting
-- [ ] VPS/Docker deployment
+- [x] Nonroot Docker/Compose packaging, persistent data volume and health checks
+- [ ] Provision and validate an actual VPS deployment
+
+## Evidence still required
+
+Feature completion is separate from evidence of a profitable strategy. The v0.17 multi-asset changes have functional, integration, container and browser checks; these checks use synthetic data or API fixtures. Current-universe research carries selection/survivorship bias. Multi-asset batch results use independent capital, not one shared portfolio. Real saved-data runs, untouched/forward evidence, shared-capital portfolio research, and venue-complete derivatives costs/position mechanics remain open. See `docs/MULTI_ASSET_V017.md` for commands and scope.

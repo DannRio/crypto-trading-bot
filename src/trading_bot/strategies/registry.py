@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from dataclasses import replace
 
 import pandas as pd
 
@@ -12,6 +13,7 @@ from trading_bot.strategies.range_mean_reversion import (
 from trading_bot.strategies.trend_continuation import (
     evaluate_trend_continuation,
 )
+from trading_bot.strategies.trend_continuation_v2 import evaluate_trend_continuation_v2
 
 
 StrategyEvaluator = Callable[
@@ -23,6 +25,7 @@ DEFAULT_STRATEGIES = ("trend_continuation",)
 
 STRATEGY_EVALUATORS: dict[str, StrategyEvaluator] = {
     "trend_continuation": evaluate_trend_continuation,
+    "trend_continuation_v2": evaluate_trend_continuation_v2,
     "breakout_retest": evaluate_breakout_retest,
     "range_mean_reversion": evaluate_range_mean_reversion,
 }
@@ -93,14 +96,8 @@ def evaluate_strategies(
                 f"Invalid parameters for strategy {name}: {exc}"
             ) from exc
         if assessment.strategy != name:
-            assessment = SetupAssessment(
-                signal=assessment.signal,
-                status=assessment.status,
-                score=assessment.score,
-                reason=assessment.reason,
-                reasons=assessment.reasons,
-                strategy=name,
-            )
+            assessment = replace(assessment, strategy=name)
+
         assessments.append(assessment)
 
     return tuple(assessments)

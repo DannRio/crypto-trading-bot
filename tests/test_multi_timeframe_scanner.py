@@ -23,7 +23,7 @@ def trending_candles(
     return pd.DataFrame(
         {
             "timestamp": pd.date_range(
-                "2025-01-01",
+                end="2025-03-01T04:00:00",
                 periods=rows,
                 freq=FREQUENCIES[timeframe],
                 tz="UTC",
@@ -48,6 +48,7 @@ def test_aligned_higher_timeframes_preserve_confirmed_setup():
         timeframe="15m",
         confirmation_timeframes=("1h", "4h"),
         min_confirmed_score=50,
+        now=lambda: pd.Timestamp("2025-03-01T04:00:00Z"),
         data_fetcher=lambda timeframe, **kwargs: datasets[
             timeframe
         ].copy(),
@@ -75,6 +76,7 @@ def test_opposite_higher_timeframe_invalidates_setup():
         timeframe="15m",
         confirmation_timeframes=("4h",),
         min_confirmed_score=50,
+        now=lambda: pd.Timestamp("2025-03-01T04:00:00Z"),
         data_fetcher=lambda timeframe, **kwargs: datasets[
             timeframe
         ].copy(),
@@ -119,6 +121,7 @@ def test_lower_timeframe_entry_trigger_confirms_setup():
         confirmation_timeframes=("4h",),
         entry_timeframe="15m",
         min_confirmed_score=50,
+        now=lambda: pd.Timestamp("2025-03-01T04:00:00Z"),
         data_fetcher=lambda timeframe, **kwargs: datasets[
             timeframe
         ].copy(),
@@ -146,6 +149,7 @@ def test_lower_timeframe_trigger_waits_without_invalidating_thesis():
         confirmation_timeframes=("4h",),
         entry_timeframe="15m",
         min_confirmed_score=50,
+        now=lambda: pd.Timestamp("2025-03-01T04:00:00Z"),
         data_fetcher=lambda timeframe, **kwargs: datasets[
             timeframe
         ].copy(),

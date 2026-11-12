@@ -10,6 +10,7 @@ from trading_bot.alerts import (
     build_scan_alerts,
 )
 from trading_bot.core.enums import SetupStatus
+from trading_bot.config import apply_profile
 from trading_bot.scanner import (
     DynamicMarketUniverse,
     MarketScanner,
@@ -17,19 +18,21 @@ from trading_bot.scanner import (
 )
 
 
-DEFAULT_SYMBOLS = "BTC/USDT,ETH/USDT,SOL/USDT,XRP/USDT,LINK/USDT,ZEC/USDT"
+DEFAULT_SYMBOLS = ""
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
+        allow_abbrev=False,
         description="Scan crypto markets for rule-qualified, risk-defined trade setups."
     )
     parser.add_argument("--exchange", default=os.getenv("TRADING_EXCHANGE", "kraken"))
     parser.add_argument("--market-type", default=os.getenv("TRADING_MARKET_TYPE", "spot"))
+    parser.add_argument("--profile", help="Shared preset (liquid-spot, broad-spot, liquid-perps) or JSON file.")
     parser.add_argument(
         "--symbols",
         default=os.getenv("TRADING_SYMBOLS", DEFAULT_SYMBOLS),
-        help="Comma-separated CCXT symbols.",
+        help="Comma-separated CCXT symbols; supplying this selects manual mode.",
     )
     parser.add_argument("--timeframe", default="1h")
     parser.add_argument(
@@ -59,24 +62,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-score", type=int, default=70)
     parser.add_argument(
         "--strategies",
-        default="trend_continuation",
+        default="trend_continuation_v2",
         help=(
-            "Comma-separated strategies. Candidates remain opt-in; "
-            "trend_continuation is the default."
+            "Comma-separated research strategies. Default: trend_continuation_v2."
         ),
     )
     parser.add_argument("--show-no-trade", action="store_true")
     parser.add_argument(
         "--auto-universe",
-        action="store_true",
-        help="Discover and rank liquid markets instead of using --symbols.",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Discover liquid markets (default when no manual symbols are supplied).",
     )
     parser.add_argument(
         "--quote-currencies",
         default="USDT",
         help="Comma-separated quote currencies for auto-universe mode.",
     )
-    parser.add_argument("--max-markets", type=int, default=20)
+    parser.add_argument("--max-markets", type=int, default=30)
     parser.add_argument(
         "--min-quote-volume",
         type=float,
@@ -101,9 +104,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-history-probes",
         type=int,
-        default=60,
+        default=100,
         help="Maximum markets to probe when validating history.",
     )
+    parser.add_argument("--max-ticker-requests", type=int, default=200)
+    parser.add_argument("--fee-rate", type=float, default=0.001)
+    parser.add_argument("--slippage-bps", type=float, default=5.0)
     parser.add_argument(
         "--alert-sinks",
         default="",
@@ -292,7 +298,12 @@ def _dispatch_alerts(args, results) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        args = apply_profile(args, argv)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.risk_percent <= 0 or args.risk_percent > 100:
         raise SystemExit("--risk-percent must be between 0 and 100.")
     if args.min_score < 0 or args.min_score > 100:
@@ -319,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
                     min_history_candles=args.min_history_candles,
                     history_timeframe=args.timeframe,
                     max_history_probes=args.max_history_probes,
+                    max_ticker_requests=args.max_ticker_requests,
                 )
             )
         except (ValueError, RuntimeError) as exc:
@@ -378,6 +390,8 @@ def main(argv: list[str] | None = None) -> int:
             risk_percent=args.risk_percent / 100,
             min_confirmed_score=args.min_score,
             strategy_names=strategy_names,
+            fee_rate=args.fee_rate,
+            slippage_bps=args.slippage_bps,
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
