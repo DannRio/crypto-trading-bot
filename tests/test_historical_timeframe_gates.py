@@ -36,11 +36,11 @@ def long_decision():
 
 
 def test_future_four_hour_candles_cannot_confirm_past_signal():
-    htf = candles("4h", 320, "up")
+    htf = candles("4h", 500, "up")
     gates = HistoricalTimeframeGates(
         "1h", {"4h": htf}, confirmation_timeframes=("4h",)
     )
-    # 2025-01-10 has fewer than 220 fully closed 4h candles.
+    # 2025-01-10 has fewer than 400 fully closed 4h candles.
     result = gates.apply(long_decision(), pd.Timestamp("2025-01-10T00:00:00Z"))
     assert result.assessment.status == SetupStatus.FORMING
     assert result.setup is None
@@ -48,10 +48,10 @@ def test_future_four_hour_candles_cannot_confirm_past_signal():
 
 def test_opposite_closed_htf_regime_rejects_trade():
     gates = HistoricalTimeframeGates(
-        "1h", {"4h": candles("4h", 320, "down")},
+        "1h", {"4h": candles("4h", 500, "down")},
         confirmation_timeframes=("4h",),
     )
-    result = gates.apply(long_decision(), pd.Timestamp("2025-02-12T00:00:00Z"))
+    result = gates.apply(long_decision(), pd.Timestamp("2025-03-15T00:00:00Z"))
     assert result.assessment.signal == Signal.NO_TRADE
     assert result.assessment.status == SetupStatus.NO_TRADE
     assert result.setup is None
@@ -59,16 +59,16 @@ def test_opposite_closed_htf_regime_rejects_trade():
 
 def test_aligned_closed_htf_regime_preserves_confirmation():
     gates = HistoricalTimeframeGates(
-        "1h", {"4h": candles("4h", 320, "up")},
+        "1h", {"4h": candles("4h", 500, "up")},
         confirmation_timeframes=("4h",),
     )
-    result = gates.apply(long_decision(), pd.Timestamp("2025-02-12T00:00:00Z"))
+    result = gates.apply(long_decision(), pd.Timestamp("2025-03-15T00:00:00Z"))
     assert result.assessment.status == SetupStatus.CONFIRMED
     assert result.setup is not None
 
 
 def test_opposing_lower_timeframe_vetoes_entry():
-    # At least 220 LTF candles are closed, and their EMA trend opposes LONG.
+    # At least 400 LTF candles are closed, and their EMA trend opposes LONG.
     gates = HistoricalTimeframeGates(
         "1h", {"15m": candles("15min", 1100, "down")},
         entry_timeframe="15m",

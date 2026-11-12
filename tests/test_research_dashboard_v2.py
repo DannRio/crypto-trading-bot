@@ -9,7 +9,7 @@ import trading_bot.web.app as web
 client = TestClient(web.app)
 
 
-def history(rows=360):
+def history(rows=480):
     values = 100 + np.linspace(0, 25, rows) + np.sin(np.arange(rows) / 8)
     return pd.DataFrame({
         "timestamp": pd.date_range("2025-01-01", periods=rows, freq="h", tz="UTC"),
@@ -25,7 +25,8 @@ def test_api_exposes_exit_ablation_and_cost_diagnostics(monkeypatch):
     monkeypatch.setattr(web, "get_ohlcv", lambda **kwargs: history())
     response = client.get(
         "/api/backtest",
-        params={"data_source":"live", "compare_exits":True},
+        params={"data_source":"live", "compare_exits":True,
+                "strategies":"trend_continuation", "confirm_timeframes":"", "entry_timeframe":""},
     )
     assert response.status_code == 200, response.text
     body = response.json()
@@ -60,20 +61,22 @@ def test_api_local_oos_requires_sufficient_bars(monkeypatch, tmp_path):
     monkeypatch.setattr(web, "HISTORY_ROOT", tmp_path)
     response = client.get(
         "/api/backtest",
-        params={"data_source":"local", "validate_oos":True},
+        params={"data_source":"local", "validate_oos":True, "exchange":"kraken", "symbol":"BTC/USD",
+                "confirm_timeframes":"", "entry_timeframe":""},
     )
     assert response.status_code == 422
     assert "1500" in response.json()["detail"]
 
 
 def test_local_invalid_dataset_reports_specific_issue(monkeypatch, tmp_path):
-    malformed = history(260)
+    malformed = history()
     malformed.loc[9, "high"] = malformed.loc[9, "low"] - 2.0
     web.HistoricalDataStore(tmp_path).upsert(
         "kraken", "spot", "BTC/USD", "1h", malformed
     )
     monkeypatch.setattr(web, "HISTORY_ROOT", tmp_path)
-    response = client.get("/api/backtest", params={"data_source": "local"})
+    response = client.get("/api/backtest", params={"data_source": "local", "exchange":"kraken", "symbol":"BTC/USD",
+                          "confirm_timeframes":"", "entry_timeframe":""})
     assert response.status_code == 422, response.text
     detail = response.json()["detail"]
     assert "invalid OHLC" in detail
@@ -84,4 +87,4 @@ def test_dashboard_displays_backtest_errors_in_same_panel():
     response = client.get("/")
     assert response.status_code == 200
     assert 'id="btError"' in response.text
-    assert '$("#btError").textContent=message' in response.text
+    assert 'errorBox("#btError",error.message)' in response.text

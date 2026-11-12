@@ -4,14 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crypto-trading-bot"
-version = "0.18.0"
-description = "Universal crypto trading decision and research engine"
+version = "0.19.0"
+description = "Persistent paper trading, coin analysis, and historical validation"
 requires-python = ">=3.12"
 
 dependencies = [
     "ccxt",
     "numpy",
     "pandas",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
 ]
 
 [project.optional-dependencies]
@@ -27,11 +29,7 @@ dev = [
 ]
 
 [project.scripts]
-crypto-engine = "trading_bot.cli:main"
-crypto-research = "trading_bot.research.cli:main"
-crypto-paper = "trading_bot.paper.cli:main"
-crypto-execution = "trading_bot.execution.cli:main"
-crypto-analyze = "trading_bot.analysis.cli:main"
+crypto-bot = "trading_bot.entry:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

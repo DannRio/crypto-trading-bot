@@ -1,11 +1,22 @@
 from pathlib import Path
 from dataclasses import asdict
+from contextlib import contextmanager
+import json
 import sqlite3
 
 import pandas as pd
 
 from trading_bot.paper.models import PaperOrder, PaperTrade
 from trading_bot.paper.risk import PortfolioRiskState
+from trading_bot.paper.locking import JournalWriterLock
+
+
+class PaperJournalIntegrityError(RuntimeError):
+    """A legacy or damaged account cannot be restored without reconciliation."""
+
+
+class PaperPersistenceError(RuntimeError):
+    """A failed commit leaves this writer unusable until a verified restart."""
 
 
 class PaperJournal:
@@ -13,10 +24,120 @@ class PaperJournal:
         self,
         path: str | Path = "data/paper/paper_trading.db",
     ):
-        self.path = Path(path)
+        if str(path) == ":memory:":
+            raise ValueError("PaperJournal requires a persistent account path.")
+        self.path = Path(path).expanduser().resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(self.path)
-        self._initialize()
+        self._writer_lock = JournalWriterLock(self.path).acquire()
+        self._readonly = False
+        self._transaction_depth = 0
+        self._rollback_only = False
+        self._failed = False
+        self._closed = False
+        try:
+            self.connection = sqlite3.connect(self.path, timeout=10)
+            self.connection.execute("PRAGMA journal_mode=WAL")
+            self.connection.execute("PRAGMA synchronous=FULL")
+            self._initialize()
+            self.verify_account_integrity()
+        except BaseException:
+            self.close()
+            raise
+
+    @classmethod
+    def open_readonly(cls, path):
+        """Inspect an existing account without a writer lock or schema changes."""
+        resolved = Path(path).expanduser().resolve()
+        if not resolved.is_file():
+            raise FileNotFoundError("The paper account has not been started.")
+        self = cls.__new__(cls)
+        self.path = resolved
+        self._writer_lock = None
+        self._readonly = True
+        self._transaction_depth = 0
+        self._rollback_only = False
+        self._failed = False
+        self._closed = False
+        self.connection = sqlite3.connect(resolved.as_uri() + "?mode=ro", uri=True, timeout=10)
+        self.connection.execute("PRAGMA query_only=ON")
+        return self
+
+    @property
+    def writer_failed(self):
+        return self._failed
+
+    def _require_writer(self):
+        if self._readonly or self._closed:
+            raise RuntimeError("This paper journal is not an open writable account.")
+        if self._failed:
+            raise PaperPersistenceError("Paper persistence failed; stop and reopen the account before continuing.")
+
+    def _commit(self):
+        self._require_writer()
+        if self._transaction_depth:
+            return
+        try:
+            self.connection.commit()
+        except BaseException as exc:
+            self._failed = True
+            try:
+                self.connection.rollback()
+            except Exception:
+                pass
+            raise PaperPersistenceError("The paper commit could not be verified; this worker must stop.") from exc
+
+    @contextmanager
+    def transaction(self):
+        """Commit a complete transition once, including nested journal writes."""
+        self._require_writer()
+        outer = self._transaction_depth == 0
+        if outer:
+            self.connection.execute("BEGIN IMMEDIATE")
+            self._rollback_only = False
+        self._transaction_depth += 1
+        failed = False
+        try:
+            yield self
+        except BaseException:
+            failed = True
+            self._rollback_only = True
+            raise
+        finally:
+            self._transaction_depth -= 1
+            if outer:
+                if self._rollback_only:
+                    try:
+                        self.connection.rollback()
+                    except BaseException as exc:
+                        self._failed = True
+                        raise PaperPersistenceError("The paper rollback could not be verified; this worker must stop.") from exc
+                    if not failed:
+                        raise PaperPersistenceError("A nested paper transition failed and was rolled back.")
+                else:
+                    self._commit()
+
+    def verify_account_integrity(self):
+        """Refuse incomplete legacy closes or duplicate terminal records."""
+        duplicate = self.connection.execute(
+            "SELECT order_id FROM paper_trades GROUP BY order_id HAVING COUNT(*) > 1 LIMIT 1"
+        ).fetchone()
+        orphan = self.connection.execute("""
+            SELECT o.order_id FROM paper_orders o LEFT JOIN paper_trades t ON t.order_id=o.order_id
+            WHERE o.status='CLOSED' AND t.order_id IS NULL LIMIT 1
+        """).fetchone()
+        unpaired = self.connection.execute("""
+            SELECT t.order_id FROM paper_trades t LEFT JOIN paper_orders o ON o.order_id=t.order_id
+            WHERE o.order_id IS NULL OR o.status != 'CLOSED' LIMIT 1
+        """).fetchone()
+        conflicting = self.connection.execute("""
+            SELECT symbol, timeframe FROM paper_orders WHERE status IN ('PENDING', 'FILLED')
+            GROUP BY symbol, timeframe HAVING COUNT(*) > 1 LIMIT 1
+        """).fetchone()
+        if duplicate or orphan or unpaired or conflicting:
+            raise PaperJournalIntegrityError(
+                "The paper account contains conflicting exposure, duplicate trades, or an incomplete closed trade. "
+                "Preserve the journal and reconcile it from verified records; it was not reset."
+            )
 
     def _initialize(self) -> None:
         self.connection.executescript(
@@ -166,7 +287,11 @@ class PaperJournal:
         )
         self._ensure_column("paper_trades", "event_id", "TEXT")
         self._ensure_column("paper_trades", "setup_type", "TEXT NOT NULL DEFAULT 'legacy_state'")
-        self.connection.commit()
+        self._ensure_column("paper_signal_events", "evidence", "TEXT NOT NULL DEFAULT '{}'")
+        self._commit()
+        self.verify_account_integrity()
+        self.connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS paper_trades_one_close ON paper_trades(order_id)")
+        self._commit()
 
     def _ensure_column(
         self,
@@ -193,6 +318,7 @@ class PaperJournal:
         return pd.Timestamp(value).isoformat()
 
     def save_order(self, order: PaperOrder) -> None:
+        self._require_writer()
         values = asdict(order)
         for key in ("signal", "status"):
             values[key] = values[key].value
@@ -203,7 +329,7 @@ class PaperJournal:
         self.connection.execute(
             f"INSERT INTO paper_orders ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) "
             f"ON CONFLICT(order_id) DO UPDATE SET {updates}", tuple(values.values()))
-        self.connection.commit()
+        self._commit()
 
     def has_setup_event(self, symbol, timeframe, event_id):
         return self.connection.execute(
@@ -211,6 +337,7 @@ class PaperJournal:
             (symbol, timeframe, event_id)).fetchone() is not None
 
     def save_trade(self, trade: PaperTrade) -> None:
+        self._require_writer()
         self.connection.execute(
             """
             INSERT INTO paper_trades (
@@ -246,7 +373,7 @@ class PaperJournal:
                 int(trade.tp1_hit), trade.event_id, trade.setup_type,
             ),
         )
-        self.connection.commit()
+        self._commit()
 
     def orders(self, limit: int = 100) -> pd.DataFrame:
         return pd.read_sql_query(
@@ -319,6 +446,7 @@ class PaperJournal:
         self,
         state: PortfolioRiskState,
     ) -> None:
+        self._require_writer()
         self.connection.execute(
             """
             INSERT INTO paper_risk_state (
@@ -363,13 +491,14 @@ class PaperJournal:
                 pd.Timestamp.now(tz="UTC").isoformat(),
             ),
         )
-        self.connection.commit()
+        self._commit()
 
     def clear_risk_state(self) -> None:
+        self._require_writer()
         self.connection.execute(
             "DELETE FROM paper_risk_state WHERE id = 1"
         )
-        self.connection.commit()
+        self._commit()
 
 
     def get_metadata(self, key: str) -> str | None:
@@ -388,6 +517,7 @@ class PaperJournal:
         key: str,
         value,
     ) -> None:
+        self._require_writer()
         self.connection.execute(
             """
             INSERT INTO paper_service_metadata (
@@ -400,7 +530,7 @@ class PaperJournal:
             """,
             (key, str(value)),
         )
-        self.connection.commit()
+        self._commit()
 
     def metadata(self) -> dict[str, str]:
         return {
@@ -457,6 +587,7 @@ class PaperJournal:
         timeframe: str,
         timestamp,
     ) -> None:
+        self._require_writer()
         value = self._timestamp(timestamp)
         now = pd.Timestamp.now(tz="UTC").isoformat()
         self.connection.execute(
@@ -474,7 +605,7 @@ class PaperJournal:
             """,
             (symbol, timeframe, value, now),
         )
-        self.connection.commit()
+        self._commit()
 
     def signal_seen(
         self,
@@ -513,7 +644,9 @@ class PaperJournal:
         signal_time,
         action: str,
         reason: str = "",
+        evidence: dict | None = None,
     ) -> None:
+        self._require_writer()
         self.connection.execute(
             """
             INSERT OR IGNORE INTO paper_signal_events (
@@ -524,9 +657,10 @@ class PaperJournal:
                 signal_time,
                 action,
                 reason,
-                created_at
+                created_at,
+                evidence
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 symbol,
@@ -537,9 +671,10 @@ class PaperJournal:
                 action,
                 reason,
                 pd.Timestamp.now(tz="UTC").isoformat(),
+                json.dumps(evidence or {}, sort_keys=True, default=str, allow_nan=False),
             ),
         )
-        self.connection.commit()
+        self._commit()
 
     def checkpoints(self) -> pd.DataFrame:
         return pd.read_sql_query(
@@ -566,4 +701,26 @@ class PaperJournal:
 
 
     def close(self) -> None:
-        self.connection.close()
+        if getattr(self, "_closed", True):
+            return
+        self._closed = True
+        try:
+            connection = getattr(self, "connection", None)
+            if connection is not None:
+                connection.close()
+        finally:
+            lock = getattr(self, "_writer_lock", None)
+            if lock is not None:
+                lock.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass

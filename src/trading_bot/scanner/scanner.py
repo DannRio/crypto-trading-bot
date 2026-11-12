@@ -3,9 +3,12 @@ from collections.abc import Callable
 import pandas as pd
 
 from trading_bot.analysis import (
-    add_indicators,
+    decision_indicators,
     analyze_market_structure,
 )
+from trading_bot.config import INDICATOR_WINDOW
+from trading_bot.exchanges.routing import canonical_exchange_id
+from trading_bot.scanner.universe import _cancelled
 from trading_bot.core.enums import SetupStatus
 from trading_bot.data import get_ohlcv, validate_ohlcv, timeframe_to_milliseconds
 from trading_bot.data.validation import latest_expected_close
@@ -47,8 +50,11 @@ class MarketScanner:
         strategy_plan_configs: dict | None = None,
         fee_rate: float = 0.001,
         slippage_bps: float = 5.0,
+        indicator_window: int = INDICATOR_WINDOW,
     ):
-        self.exchange_id = exchange_id
+        if type(indicator_window) is not int or indicator_window < 220:
+            raise ValueError("indicator_window must be an integer of at least 220 candles.")
+        self.exchange_id = canonical_exchange_id(exchange_id, market_type)
         self.market_type = market_type
         self.timeframe = timeframe
         self.confirmation_timeframes = (
@@ -62,6 +68,7 @@ class MarketScanner:
             entry_timeframe,
         )
         self.candle_limit = candle_limit
+        self.indicator_window = indicator_window
         self.account_equity = account_equity
         self.risk_percent = risk_percent
         self.min_confirmed_score = min_confirmed_score
@@ -75,6 +82,7 @@ class MarketScanner:
         self.fee_rate, self.slippage_bps = fee_rate, slippage_bps
         self._decision_close = None
         self._frame_cache = {}
+        self._cancel = None
 
     def decision_frames(self) -> dict[str, pd.DataFrame]:
         """Return copies of the exact validated candles used by the latest scan.
@@ -94,6 +102,8 @@ class MarketScanner:
         timeframe: str,
     ):
         key = (symbol, timeframe)
+        if _cancelled(self._cancel):
+            return None, None, "Market scan cancelled."
         if key in self._frame_cache:
             return self._frame_cache[key]
         df = self.data_fetcher(
@@ -124,6 +134,9 @@ class MarketScanner:
             return closed, quality, "; ".join(quality.issues + quality.warnings)
         if closed.empty or closed["timestamp"].iloc[-1] + delta != latest_expected_close(as_of, timeframe):
             return closed, quality, "Stale candles: latest expected closed interval is missing."
+        if len(closed) < self.indicator_window:
+            return closed, quality, f"Insufficient indicator history: {self.indicator_window} closed candles are required."
+        closed = closed.tail(self.indicator_window).copy()
         result = (closed, quality, None)
         self._frame_cache[key] = result
         return result
@@ -154,7 +167,7 @@ class MarketScanner:
                     )
                     continue
 
-                data = add_indicators(closed)
+                data = decision_indicators(closed, window=self.indicator_window)
                 structure = analyze_market_structure(data)
                 confirmations.append(
                     TimeframeConfirmation(
@@ -207,7 +220,7 @@ class MarketScanner:
                     error=error,
                 )
 
-            data = add_indicators(closed)
+            data = decision_indicators(closed, window=self.indicator_window)
             structure = analyze_market_structure(data)
             return evaluate_entry_trigger(
                 signal=signal,
@@ -255,7 +268,7 @@ class MarketScanner:
 
             self._decision_close = closed["timestamp"].iloc[-1] + pd.to_timedelta(
                 timeframe_to_milliseconds(self.timeframe), unit="ms")
-            data = add_indicators(closed)
+            data = decision_indicators(closed, window=self.indicator_window)
             contexts = {}
             def candidate_gate(assessment):
                 confirmations = self._confirmation_context(symbol, assessment.signal, assessment.strategy)
@@ -314,8 +327,19 @@ class MarketScanner:
                 entry_timeframe=self.entry_timeframe,
             )
 
-    def scan(self, symbols: list[str]) -> list[ScanResult]:
-        results = [self.scan_symbol(symbol) for symbol in symbols]
+    def scan(self, symbols: list[str], *, cancel=None) -> list[ScanResult]:
+        """Check cancellation between public requests and discard partial scans."""
+        previous, self._cancel = self._cancel, cancel
+        results = []
+        try:
+            for symbol in symbols:
+                if _cancelled(cancel):
+                    break
+                results.append(self.scan_symbol(symbol))
+            if _cancelled(cancel):
+                return []
+        finally:
+            self._cancel = previous
         status_rank = {
             SetupStatus.CONFIRMED: 0,
             SetupStatus.FORMING: 1,

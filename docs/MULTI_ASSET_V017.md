@@ -1,3 +1,7 @@
+# Historical v0.17 documentation
+
+This document records the earlier multi-asset implementation. For current startup, supported paper operation and removal of the old console aliases/approval dashboard, use the [current README](../README.md) and [v0.19 core release](CORE_RELEASE.md). Old commands and screenshots below describe that earlier interface.
+
 # Multi-asset development and operation — v0.17
 
 ## What this release completes

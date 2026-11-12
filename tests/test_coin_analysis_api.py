@@ -52,8 +52,13 @@ class CoinAnalysisApiTests(TestCase):
         self.assertEqual(request.risk_percent, 0.25)
         self.assertEqual(request.exchange, "kucoin")
         self.assertEqual(request.market_type, "spot")
-        self.assertTrue(request.include_fundamentals)
+        self.assertFalse(request.include_fundamentals)
         self.assertIsNone(response.json()["decision"]["win_probability"])
+
+    def test_optional_fundamentals_can_be_requested_explicitly(self):
+        response = self.client.post("/api/analyze", json={"query": "BTC", "include_fundamentals": True})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(self.requests[0].include_fundamentals)
 
     def test_swap_and_disabled_fundamentals_are_explicit(self):
         response = self.client.post("/api/analyze", json={"query": "BTC/USDT:USDT", "market_type": "swap",

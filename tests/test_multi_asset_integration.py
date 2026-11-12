@@ -1,4 +1,4 @@
-"""Profile, public API, and staging integration without external exchange requests."""
+"""Advanced research profiles and public API integration without exchange requests."""
 import json
 
 import pandas as pd
@@ -10,7 +10,6 @@ from trading_bot.config import apply_profile, load_profile
 from trading_bot.core.enums import Signal, SetupStatus
 from trading_bot.paper import PaperJournal
 from trading_bot.paper import cli as paper_cli
-from trading_bot.planning import TradeSetup
 from trading_bot.scanner import MarketCandidate, ScanResult, UniverseSelection
 from trading_bot.strategies import SetupAssessment
 from trading_bot.web import app as web
@@ -176,59 +175,6 @@ def test_profile_endpoint_serializes_supported_presets():
     assert profiles["liquid-spot"]["settings"]["strategies"] == "trend_continuation_v2"
     assert body["live_execution"] is False
     assert all(profile["schema_version"] == 1 for profile in profiles.values())
-
-
-def confirmed_result(symbol):
-    setup = TradeSetup(
-        signal=Signal.LONG, status=SetupStatus.CONFIRMED, score=82,
-        reference_entry=100, entry_low=99.5, entry_high=100.5, stop_loss=95,
-        take_profit_1=105, take_profit_2=110, reward_to_risk_1=1, reward_to_risk_2=2,
-        position_size=2, notional_value=200, target_risk_amount=10,
-        actual_risk_amount=10, reasons=("Server-generated integration fixture",),
-    )
-    return ScanResult(
-        exchange_id="kucoin", market_type="spot", symbol=symbol, timeframe="1h",
-        assessment=SetupAssessment(signal=Signal.LONG, status=SetupStatus.CONFIRMED,
-                                   score=82, reason="Qualified fixture", reasons=(),
-                                   strategy="trend_continuation_v2"),
-        structure=None, setup=setup, data_quality=None,
-        signal_time=pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=1),
-    )
-
-
-def test_staging_keeps_nondefault_scan_costs_and_stays_dry_run(monkeypatch, tmp_path):
-    captured = {}
-
-    class Scanner:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-        def scan_symbol(self, symbol):
-            return confirmed_result(symbol)
-
-    monkeypatch.setattr(web, "MarketScanner", Scanner)
-    monkeypatch.setattr(web, "ASSISTED_DB_PATH", tmp_path / "assisted.db")
-    response = client.post("/api/assisted/stage", json={
-        "exchange": "kucoin", "market_type": "spot", "symbol": "LINK/USDT",
-        "timeframe": "1h", "strategies": ["trend_continuation_v2"],
-        "fee_rate": 0.003, "slippage_bps": 23.5,
-    })
-    assert response.status_code == 200, response.text
-    assert captured["fee_rate"] == 0.003
-    assert captured["slippage_bps"] == 23.5
-    assert response.json()["live_execution"] is False
-    assert response.json()["intent"]["status"] == "PENDING_APPROVAL"
-    assert response.json()["intent"]["symbol"] == "LINK/USDT"
-
-
-@pytest.mark.parametrize("costs", [{"fee_rate": -0.001}, {"slippage_bps": -1}, {"fee_rate": 0.5}])
-def test_staging_rejects_invalid_costs_before_scanner(monkeypatch, costs):
-    def unexpected_scanner(**kwargs):
-        pytest.fail("Invalid costs must be rejected before a market request.")
-
-    monkeypatch.setattr(web, "MarketScanner", unexpected_scanner)
-    response = client.post("/api/assisted/stage", json={"symbol": "LINK/USDT", **costs})
-    assert response.status_code == 422
 
 
 def test_paper_status_exposes_persisted_universe_and_heartbeat(monkeypatch, tmp_path):

@@ -16,6 +16,8 @@ from trading_bot.paper import (
 from trading_bot.planning import TradeSetup
 from trading_bot.strategies import SetupAssessment
 
+# These service/state tests explicitly disable public-book preflight. Its
+# required production gate and expiry/evidence behavior have separate tests.
 
 def long_setup() -> TradeSetup:
     return TradeSetup(
@@ -200,7 +202,7 @@ def test_service_processes_each_closed_candle_once(tmp_path):
     journal = PaperJournal(tmp_path / "paper.db")
     service = PaperTradingService(
         config=PaperServiceConfig(
-            exchange_id="fake",
+            exchange_id="fake", liquidity_preflight=False,
             market_type="spot",
             timeframe="1h",
             symbols=("BTC/USDT",),
@@ -228,12 +230,20 @@ def test_service_processes_each_closed_candle_once(tmp_path):
     second = service.run_once()
     assert second.new_candles == 1
     assert second.rejected_signals == 1
+    assert len(service.broker.pending_orders) == 1
+    assert service.broker.snapshot().open_positions == 0
+    assert order.bars_remaining == 3  # The 02:00 bar began before submission at 02:30.
+
+    feed.rows[-1] = [100.0, 101.0, 99.0, 100.0]
+    feed.append(100.0, 101.0, 99.0, 100.0)
+    third = service.run_once()
+    assert third.new_candles == 1
     assert len(service.broker.pending_orders) == 0
     assert service.broker.snapshot().open_positions == 1
 
-    third = service.run_once()
-    assert third.new_candles == 0
-    assert third.duplicate_signals == 1
+    fourth = service.run_once()
+    assert fourth.new_candles == 0
+    assert fourth.duplicate_signals == 1
     assert service.broker.snapshot().open_positions == 1
 
     journal.close()
@@ -246,7 +256,7 @@ def test_service_recovers_pending_order_after_restart(tmp_path):
     journal = PaperJournal(path)
     first_service = PaperTradingService(
         config=PaperServiceConfig(
-            exchange_id="fake",
+            exchange_id="fake", liquidity_preflight=False,
             market_type="spot",
             timeframe="1h",
             symbols=("BTC/USDT",),
@@ -265,7 +275,7 @@ def test_service_recovers_pending_order_after_restart(tmp_path):
     reopened = PaperJournal(path)
     second_service = PaperTradingService(
         config=PaperServiceConfig(
-            exchange_id="fake",
+            exchange_id="fake", liquidity_preflight=False,
             market_type="spot",
             timeframe="1h",
             symbols=("BTC/USDT",),
@@ -338,7 +348,7 @@ def test_spot_short_signal_is_rejected_once(tmp_path):
     journal = PaperJournal(tmp_path / "paper.db")
     service = PaperTradingService(
         config=PaperServiceConfig(
-            exchange_id="fake",
+            exchange_id="fake", liquidity_preflight=False,
             market_type="spot",
             timeframe="1h",
             symbols=("BTC/USDT",),
@@ -371,7 +381,7 @@ def test_run_forever_can_continue_after_cycle_error(tmp_path):
     journal = PaperJournal(tmp_path / "paper.db")
     service = PaperTradingService(
         config=PaperServiceConfig(
-            exchange_id="fake",
+            exchange_id="fake", liquidity_preflight=False,
             market_type="spot",
             timeframe="1h",
             symbols=("BTC/USDT",),
@@ -417,7 +427,7 @@ def test_service_rejects_restart_with_different_account_invariants(
     first = PaperJournal(path)
     PaperTradingService(
         config=PaperServiceConfig(
-            exchange_id="fake",
+            exchange_id="fake", liquidity_preflight=False,
             market_type="spot",
             timeframe="1h",
             symbols=("BTC/USDT",),
@@ -438,7 +448,7 @@ def test_service_rejects_restart_with_different_account_invariants(
     ):
         PaperTradingService(
             config=PaperServiceConfig(
-                exchange_id="fake",
+                exchange_id="fake", liquidity_preflight=False,
                 market_type="spot",
                 timeframe="15m",
                 symbols=("BTC/USDT",),
@@ -462,7 +472,7 @@ def test_daily_loss_halt_cancels_pending_orders_and_persists(
     journal = PaperJournal(path)
     service = PaperTradingService(
         config=PaperServiceConfig(
-            exchange_id="fake",
+            exchange_id="fake", liquidity_preflight=False,
             market_type="spot",
             timeframe="1h",
             symbols=("BTC/USDT",),
@@ -501,7 +511,7 @@ def test_daily_loss_halt_cancels_pending_orders_and_persists(
     reopened = PaperJournal(path)
     restarted = PaperTradingService(
         config=PaperServiceConfig(
-            exchange_id="fake",
+            exchange_id="fake", liquidity_preflight=False,
             market_type="spot",
             timeframe="1h",
             symbols=("BTC/USDT",),
@@ -534,7 +544,7 @@ def test_management_error_blocks_new_risk_for_cycle(tmp_path):
     journal = PaperJournal(tmp_path / "paper.db")
     service = PaperTradingService(
         config=PaperServiceConfig(
-            exchange_id="fake",
+            exchange_id="fake", liquidity_preflight=False,
             market_type="spot",
             timeframe="1h",
             symbols=("BTC/USDT", "BROKEN/USDT"),
@@ -564,7 +574,7 @@ def test_service_rejects_silent_risk_policy_change(tmp_path):
     first = PaperJournal(path)
     PaperTradingService(
         config=PaperServiceConfig(
-            exchange_id="fake",
+            exchange_id="fake", liquidity_preflight=False,
             market_type="spot",
             timeframe="1h",
             symbols=("BTC/USDT",),
@@ -586,7 +596,7 @@ def test_service_rejects_silent_risk_policy_change(tmp_path):
     ):
         PaperTradingService(
             config=PaperServiceConfig(
-                exchange_id="fake",
+                exchange_id="fake", liquidity_preflight=False,
                 market_type="spot",
                 timeframe="1h",
                 symbols=("BTC/USDT",),
@@ -628,7 +638,7 @@ def test_paper_service_uses_scanner_and_universe_quality_settings(
     journal = PaperJournal(tmp_path / "paper.db")
     service = PaperTradingService(
         config=PaperServiceConfig(
-            exchange_id="fake",
+            exchange_id="fake", liquidity_preflight=False,
             market_type="spot",
             timeframe="1h",
             confirmation_timeframes=("4h",),
@@ -705,7 +715,7 @@ class SequencedUniverse:
 def auto_service(journal, feed, universe, clock):
     return PaperTradingService(
         config=PaperServiceConfig(
-            exchange_id="fake",
+            exchange_id="fake", liquidity_preflight=False,
             auto_universe=True,
             universe_refresh_seconds=60,
             fee_rate=0.0,
@@ -872,7 +882,7 @@ def test_restart_requires_new_discovery_despite_persisted_snapshot(tmp_path):
     {"entry_expiry_bars": 5},
 ])
 def test_restart_rejects_changed_signal_policy(tmp_path, change):
-    config = PaperServiceConfig(exchange_id="fake", symbols=("BTC/USDT",))
+    config = PaperServiceConfig(exchange_id="fake", liquidity_preflight=False, symbols=("BTC/USDT",))
     journal = PaperJournal(tmp_path / "paper.db")
     PaperTradingService(config=config, journal=journal)
     with pytest.raises(ValueError, match="signal_policy"):
@@ -881,7 +891,7 @@ def test_restart_rejects_changed_signal_policy(tmp_path, change):
 
 
 def test_restart_rejects_changed_universe_policy(tmp_path):
-    config = PaperServiceConfig(exchange_id="fake", auto_universe=True)
+    config = PaperServiceConfig(exchange_id="fake", liquidity_preflight=False, auto_universe=True)
     journal = PaperJournal(tmp_path / "paper.db")
     PaperTradingService(config=config, journal=journal)
     with pytest.raises(ValueError, match="universe_policy"):
@@ -892,7 +902,7 @@ def test_restart_rejects_changed_universe_policy(tmp_path):
 
 
 def test_legacy_config_migration_is_explicit_and_does_not_hide_mismatch(tmp_path):
-    config = PaperServiceConfig(exchange_id="fake", symbols=("BTC/USDT",))
+    config = PaperServiceConfig(exchange_id="fake", liquidity_preflight=False, symbols=("BTC/USDT",))
     journal = PaperJournal(tmp_path / "paper.db")
     PaperTradingService(config=config, journal=journal)
     journal.connection.execute(
@@ -958,7 +968,7 @@ def test_paper_candle_close_boundary_keeps_closed_only_last_row(
     data = CandleFeed()()
     journal = PaperJournal(tmp_path / "paper.db")
     service = PaperTradingService(
-        config=PaperServiceConfig(exchange_id="fake", symbols=("BTC/USDT",)),
+        config=PaperServiceConfig(exchange_id="fake", liquidity_preflight=False, symbols=("BTC/USDT",)),
         journal=journal,
         data_fetcher=lambda **kwargs: data.copy(),
         scanner_factory=FakeScanner,
@@ -994,7 +1004,7 @@ def test_invalid_paper_data_does_not_advance_checkpoint_or_open_risk(tmp_path, c
 
     journal = PaperJournal(tmp_path / "paper.db")
     service = PaperTradingService(
-        config=PaperServiceConfig(exchange_id="fake", symbols=("BTC/USDT",)),
+        config=PaperServiceConfig(exchange_id="fake", liquidity_preflight=False, symbols=("BTC/USDT",)),
         journal=journal,
         data_fetcher=lambda **kwargs: data.copy(),
         scanner_factory=FakeScanner,
@@ -1027,7 +1037,7 @@ def test_paper_management_and_scanner_share_frozen_cycle_clock(tmp_path):
 
     journal = PaperJournal(tmp_path / "paper.db")
     service = PaperTradingService(
-        config=PaperServiceConfig(exchange_id="fake", symbols=("BTC/USDT",)),
+        config=PaperServiceConfig(exchange_id="fake", liquidity_preflight=False, symbols=("BTC/USDT",)),
         journal=journal,
         data_fetcher=slow_fetch,
         scanner_factory=ClockScanner,
@@ -1055,7 +1065,7 @@ def test_strict_legacy_scanner_factory_remains_compatible(tmp_path):
     feed = CandleFeed()
     journal = PaperJournal(tmp_path / "paper.db")
     service = PaperTradingService(
-        config=PaperServiceConfig(exchange_id="fake", symbols=("BTC/USDT",)),
+        config=PaperServiceConfig(exchange_id="fake", liquidity_preflight=False, symbols=("BTC/USDT",)),
         journal=journal,
         data_fetcher=feed,
         scanner_factory=LegacyScanner,

@@ -48,11 +48,17 @@ class CoinAnalysisCliTests(unittest.TestCase):
         self.request_type.assert_called_once_with(
             query="QNT", exchange="kucoin", market_type="spot", quote="USDT",
             equity=10_000, risk_percent=0.25, notional=1_000, fee_rate=0.001,
-            slippage_bps=5, include_fundamentals=True,
+            slippage_bps=5, include_fundamentals=False,
         )
         self.assertEqual(self.service.analyze.call_args.args[0].risk_percent, 0.25)
         self.service_type.assert_called_once_with()
         self.journal_type.assert_not_called()
+
+    def test_optional_fundamentals_require_explicit_enable(self):
+        code, _, stderr = self.invoke(["QNT", "--fundamentals"])
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertTrue(self.service.analyze.call_args.args[0].include_fundamentals)
 
     def test_multiword_name_and_selected_quote_are_passed_unchanged(self):
         code, _, _ = self.invoke(["Bitcoin Cash", "--quote", "USDC", "--exchange", "kraken"])
@@ -108,6 +114,7 @@ class CoinAnalysisCliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(stdout, "")
         self.assertIn("Invalid analysis inputs", stderr)
+        self.assertTrue(stderr.startswith("crypto-bot analyze: error:"))
         self.assertNotIn("private-secret", stderr)
         self.service_type.assert_not_called()
         self.journal_type.assert_not_called()
@@ -135,7 +142,9 @@ class CoinAnalysisCliTests(unittest.TestCase):
         code, stdout, stderr = self.invoke(["--help"])
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
-        self.assertIn("crypto-analyze", stdout)
+        self.assertIn("crypto-bot analyze", stdout)
+        self.assertIn("--fundamentals", stdout)
+        self.assertIn("--no-fundamentals", stdout)
         self.assertIn("0.25 means 0.25%", " ".join(stdout.split()))
         self.assertIn("TRADING_ANALYSIS_DB", stdout)
         self.assertIn("No orders are placed", stdout)

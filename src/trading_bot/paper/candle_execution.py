@@ -14,13 +14,22 @@ def process_broker_candle(broker, symbol, timeframe, candle):
     stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
     key = (symbol, timeframe)
     broker.last_prices[symbol] = float(candle["close"])
-    relevant = {o.order_id for o in broker.pending_orders if (o.symbol, o.timeframe) == key}
+    def available(order):
+        created = pd.Timestamp(order.created_at)
+        created = created.tz_localize("UTC") if created.tzinfo is None else created.tz_convert("UTC")
+        return stamp >= created
+    # A completed OHLC bar includes prices that happened before an order placed
+    # partway through it. Wait for a complete post-submission bar rather than
+    # inventing a fill or consuming entry expiry from that unavailable interval.
+    relevant = {o.order_id for o in broker.pending_orders
+                if (o.symbol, o.timeframe) == key and available(o)}
     if key in broker.positions:
         relevant.add(broker.positions[key].order_id)
     if not relevant:
         return []
     candidates = []
-    original_order = next((o for o in broker.pending_orders if (o.symbol, o.timeframe) == key), None)
+    original_order = next((o for o in broker.pending_orders
+                           if (o.symbol, o.timeframe) == key and available(o)), None)
     for points in ohlc_paths(candle, original_order, broker.positions.get(key)):
         trial = copy(broker)
         trial.journal = None  # speculative paths must never write persistent state
@@ -31,7 +40,8 @@ def process_broker_candle(broker, symbol, timeframe, candle):
         trial.completed_trades = []
         trial.last_prices = dict(broker.last_prices)
         def get_pending():
-            return next((o for o in trial.pending_orders if (o.symbol, o.timeframe) == key), None)
+            return next((o for o in trial.pending_orders
+                         if (o.symbol, o.timeframe) == key and available(o)), None)
         def get_position():
             pos = trial.positions.get(key)
             if pos is None:

@@ -1,5 +1,6 @@
 import ccxt
 from threading import RLock
+from trading_bot.exchanges.routing import canonical_exchange_id
 
 
 _PUBLIC_CLIENTS: dict[tuple[str, str], "CCXTClient"] = {}
@@ -12,6 +13,7 @@ def get_public_client(exchange_id: str = "kraken", market_type: str = "spot") ->
     Private/authenticated execution adapters deliberately have separate clients.
     Synchronous calls on one public client are serialized across threads in this process.
     """
+    exchange_id = canonical_exchange_id(exchange_id, market_type)
     key = (exchange_id, market_type)
     with _CLIENTS_LOCK:
         if key not in _PUBLIC_CLIENTS:
@@ -25,7 +27,7 @@ class CCXTClient:
         exchange_id: str = "kraken",
         market_type: str = "spot",
     ):
-        self.exchange_id = exchange_id
+        self.exchange_id = canonical_exchange_id(exchange_id, market_type)
         self.market_type = market_type
         self._request_lock = RLock()
         self.exchange = self._create_exchange()
@@ -41,6 +43,7 @@ class CCXTClient:
         return exchange_class(
             {
                 "enableRateLimit": True,
+                "timeout": 10_000,
                 "options": {
                     "defaultType": self.market_type,
                 },

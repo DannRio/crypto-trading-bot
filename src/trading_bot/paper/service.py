@@ -7,13 +7,15 @@ from typing import Callable
 
 import pandas as pd
 
+from trading_bot.analysis.preflight import public_entry_preflight
 from trading_bot.core.enums import Signal, SetupStatus
 from trading_bot.data import get_ohlcv, timeframe_to_milliseconds, validate_ohlcv
 from trading_bot.data.validation import latest_expected_close
 from trading_bot.paper.broker import PaperBroker
-from trading_bot.paper.journal import PaperJournal
+from trading_bot.paper.journal import PaperJournal, PaperPersistenceError
 from trading_bot.paper.models import PaperAccountSnapshot
 from trading_bot.paper.risk import PortfolioRiskConfig
+from trading_bot.planning import TradePlanConfig
 from trading_bot.scanner import (
     DynamicMarketUniverse,
     MarketScanner,
@@ -43,12 +45,17 @@ class PaperServiceConfig:
     max_history_probes: int = 60
     max_ticker_requests: int = 200
     candle_limit: int = 500
+    indicator_window: int = 400
     starting_equity: float = 10_000
     risk_percent: float = 0.01
     min_confirmed_score: int = 70
     strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES
     fee_rate: float = 0.001
     slippage_bps: float = 5.0
+    notional_cap: float = 1_000.0
+    min_blended_net_rr: float = 1.0
+    liquidity_preflight: bool = True
+    policy_fingerprint: str | None = None
     entry_expiry_bars: int = 3
     interval_seconds: float = 60.0
     universe_refresh_seconds: float = 900.0
@@ -59,20 +66,27 @@ class PaperServiceConfig:
     )
 
     def __post_init__(self):
-        if self.starting_equity <= 0:
-            raise ValueError("starting_equity must be positive.")
-        if not 0 < self.risk_percent <= 1:
+        if not math.isfinite(self.starting_equity) or self.starting_equity <= 0:
+            raise ValueError("starting_equity must be finite and positive.")
+        if not math.isfinite(self.risk_percent) or not 0 < self.risk_percent <= 1:
             raise ValueError(
                 "risk_percent must be greater than 0 and <= 1."
             )
-        if self.fee_rate < 0 or self.slippage_bps < 0:
+        if (not math.isfinite(self.fee_rate) or not 0 <= self.fee_rate < 1
+                or not math.isfinite(self.slippage_bps) or not 0 <= self.slippage_bps < 10_000):
             raise ValueError(
-                "fee_rate and slippage_bps cannot be negative."
+                "fee_rate and slippage_bps must be finite and within valid ranges."
             )
+        if not math.isfinite(self.notional_cap) or self.notional_cap <= 0:
+            raise ValueError("notional_cap must be finite and positive.")
+        if not math.isfinite(self.min_blended_net_rr) or self.min_blended_net_rr <= 0:
+            raise ValueError("min_blended_net_rr must be finite and positive.")
+        if type(self.indicator_window) is not int or self.indicator_window < 220:
+            raise ValueError("indicator_window must be an integer of at least 220.")
         if self.entry_expiry_bars <= 0:
             raise ValueError("entry_expiry_bars must be positive.")
-        if self.interval_seconds <= 0:
-            raise ValueError("interval_seconds must be positive.")
+        if not math.isfinite(self.interval_seconds) or self.interval_seconds <= 0:
+            raise ValueError("interval_seconds must be finite and positive.")
         if (
             not math.isfinite(self.universe_refresh_seconds)
             or self.universe_refresh_seconds <= 0
@@ -136,6 +150,7 @@ class PaperServiceRunReport:
     universe_cached: bool = False
     universe_last_attempt_at: str | None = None
     universe_last_success_at: str | None = None
+    management_error_details: tuple[str, ...] = ()
 
 
 class PaperTradingService:
@@ -152,12 +167,16 @@ class PaperTradingService:
         restore_state: bool = True,
         monotonic_clock: Callable | None = None,
         utc_now: Callable | None = None,
+        entry_preflight: Callable | None = None,
     ):
         self.config = config
         self.journal = journal
         self.data_fetcher = data_fetcher
         self.scanner_factory = scanner_factory
         self.universe_factory = universe_factory
+        self.entry_preflight = entry_preflight or public_entry_preflight
+        self._stop_event = None
+        self._closed = False
         self._monotonic_clock = monotonic_clock or time.monotonic
         self._utc_now = utc_now or (lambda: pd.Timestamp.now(tz="UTC"))
         self._universe_selector = None
@@ -225,6 +244,11 @@ class PaperTradingService:
                     "entry_timeframe": self.config.entry_timeframe,
                     "candle_limit": self.config.candle_limit,
                     "entry_expiry_bars": self.config.entry_expiry_bars,
+                    "indicator_window": self.config.indicator_window,
+                    "notional_cap": self.config.notional_cap,
+                    "min_blended_net_rr": self.config.min_blended_net_rr,
+                    "liquidity_preflight": self.config.liquidity_preflight,
+                    "policy_fingerprint": self.config.policy_fingerprint,
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -249,11 +273,9 @@ class PaperTradingService:
         persisted = self.journal.metadata()
 
         if not persisted:
-            for key, value in expected.items():
-                self.journal.set_metadata(
-                    key,
-                    self._canonical_metadata_value(value),
-                )
+            with self.journal.transaction():
+                for key, value in expected.items():
+                    self.journal.set_metadata(key, self._canonical_metadata_value(value))
             return
 
         mismatches = []
@@ -266,7 +288,15 @@ class PaperTradingService:
             if actual is None:
                 missing[key] = expected_value
                 continue
-            if actual != expected_value:
+            matches = actual == expected_value
+            if not matches and key in {"risk_policy", "signal_policy", "universe_policy"}:
+                try:
+                    # JSON preserves integer/float spelling. Equivalent CLI
+                    # and dashboard values (1000 vs 1000.0) are one policy.
+                    matches = json.loads(actual) == json.loads(expected_value)
+                except (TypeError, ValueError):
+                    pass
+            if not matches:
                 mismatches.append(
                     f"{key}: journal={actual!r}, "
                     f"requested={expected_value!r}"
@@ -283,20 +313,19 @@ class PaperTradingService:
         # Older journals did not record these settings. Preserve recovery,
         # but explicitly mark that prior signal configuration is unverified.
         # Do not mutate metadata at all if another invariant mismatched.
-        for key, value in missing.items():
-            self.journal.set_metadata(key, value)
-        migrated_policies = sorted(set(missing) & {"signal_policy", "universe_policy"})
-        if migrated_policies:
-            self.journal.set_metadata(
-                "config_migration_warnings",
-                json.dumps(
-                    [
+        with self.journal.transaction():
+            for key, value in missing.items():
+                self.journal.set_metadata(key, value)
+            migrated_policies = sorted(set(missing) & {"signal_policy", "universe_policy"})
+            if migrated_policies:
+                self.journal.set_metadata(
+                    "config_migration_warnings",
+                    json.dumps([
                         f"Legacy journal did not record {key}; current settings establish "
                         "the restart baseline. Earlier settings cannot be verified."
                         for key in migrated_policies
-                    ]
-                ),
-            )
+                    ]),
+                )
 
     def _now_timestamp(self) -> pd.Timestamp:
         timestamp = pd.Timestamp(self._utc_now())
@@ -396,8 +425,7 @@ class PaperTradingService:
                     exchange_id=self.config.exchange_id,
                     market_type=self.config.market_type,
                 )
-            selection = self._universe_selector.select(
-                UniverseConfig(
+            universe_config = UniverseConfig(
                     market_type=self.config.market_type,
                     quote_currencies=self.config.quote_currencies,
                     max_markets=self.config.max_markets,
@@ -408,7 +436,15 @@ class PaperTradingService:
                     max_history_probes=self.config.max_history_probes,
                     max_ticker_requests=self.config.max_ticker_requests,
                 )
-            )
+            select = self._universe_selector.select
+            try:
+                parameters = inspect.signature(select).parameters
+            except (TypeError, ValueError):
+                parameters = {}
+            if "cancel" in parameters:
+                selection = select(universe_config, cancel=self._stop_event)
+            else:
+                selection = select(universe_config)
             self._universe_warnings = tuple(getattr(selection, "warnings", ()))
             symbols = list(dict.fromkeys(selection.symbols))
             if not symbols:
@@ -530,20 +566,20 @@ class PaperTradingService:
 
         latest = closed.iloc[-1]
         latest_time = pd.Timestamp(latest["timestamp"])
-        self.broker.last_prices[symbol] = float(
-            latest["close"]
-        )
 
         checkpoint = self.journal.get_checkpoint(
             symbol,
             self.config.timeframe,
         )
         if checkpoint is None:
-            self.journal.set_checkpoint(
-                symbol,
-                self.config.timeframe,
-                latest_time,
-            )
+            if self.broker.has_exposure(symbol, self.config.timeframe):
+                raise ValueError(
+                    f"{symbol}: saved exposure has no candle checkpoint. "
+                    "Management stopped; preserve this account and reconcile its missing history."
+                )
+            with self.broker.atomic_transition():
+                self.broker.last_prices[symbol] = float(latest["close"])
+                self.journal.set_checkpoint(symbol, self.config.timeframe, latest_time)
             return 0, 0, latest_time
 
         checkpoint = pd.Timestamp(checkpoint)
@@ -551,26 +587,44 @@ class PaperTradingService:
             checkpoint = checkpoint.tz_localize("UTC")
         else:
             checkpoint = checkpoint.tz_convert("UTC")
+        if pd.isna(checkpoint) or checkpoint > latest_time:
+            raise ValueError(f"{symbol}: saved candle checkpoint is invalid or ahead of available closed history.")
 
         unseen = closed[
             closed["timestamp"] > checkpoint
         ]
+        if not unseen.empty:
+            expected = checkpoint + pd.to_timedelta(
+                timeframe_to_milliseconds(self.config.timeframe), unit="ms")
+            first = pd.Timestamp(unseen.iloc[0]["timestamp"])
+            if first != expected:
+                raise ValueError(
+                    f"{symbol}: missing recovery history after {checkpoint.isoformat()}; "
+                    f"expected {expected.isoformat()}, received {first.isoformat()}. "
+                    "Management stopped and the checkpoint was preserved. Restore complete history before resuming."
+                )
         processed = 0
         closed_trades = 0
 
         for _, candle in unseen.iterrows():
-            trades = self.broker.process_candle(
-                symbol=symbol,
-                timeframe=self.config.timeframe,
-                candle=candle,
-            )
-            self.journal.set_checkpoint(
-                symbol,
-                self.config.timeframe,
-                candle["timestamp"],
-            )
+            if self._stop_event is not None and self._stop_event.is_set():
+                break
+            # Order, partial/terminal fills, risk state, and cursor form one
+            # durable unit. A retry cannot apply a committed candle twice.
+            with self.broker.atomic_transition():
+                trades = self.broker.process_candle(
+                    symbol=symbol, timeframe=self.config.timeframe, candle=candle)
+                risk = self.broker.evaluate_account_risk(
+                    candle["timestamp"] + pd.to_timedelta(
+                        timeframe_to_milliseconds(self.config.timeframe), unit="ms"))
+                if risk.state.halted:
+                    self.broker.cancel_all_pending(reason="RISK_HALT")
+                self.journal.set_checkpoint(symbol, self.config.timeframe, candle["timestamp"])
             processed += 1
             closed_trades += len(trades)
+
+        if unseen.empty:
+            self.broker.last_prices[symbol] = float(latest["close"])
 
         return processed, closed_trades, latest_time
 
@@ -590,17 +644,28 @@ class PaperTradingService:
             "fee_rate": self.config.fee_rate,
             "slippage_bps": self.config.slippage_bps,
         }
-        # The real scanner supports `now`; keep older injected adapters that
-        # explicitly enumerate the original constructor arguments usable.
+        # Keep injected adapters with an explicit legacy signature usable.
         try:
             parameters = inspect.signature(self.scanner_factory).parameters
         except (TypeError, ValueError):
             parameters = {}
-        if "now" in parameters or any(
+        accepts_kwargs = any(
             parameter.kind == inspect.Parameter.VAR_KEYWORD
             for parameter in parameters.values()
-        ):
-            kwargs["now"] = self._decision_time
+        )
+        optional = {
+            "now": self._decision_time,
+            "indicator_window": self.config.indicator_window,
+            "strategy_plan_configs": {
+                strategy: TradePlanConfig(
+                    max_notional_value=self.config.notional_cap,
+                    max_notional_percent=1,
+                    min_target_net_rr=1,
+                    min_blended_net_rr=self.config.min_blended_net_rr,
+                ) for strategy in self.config.strategy_names
+            },
+        }
+        kwargs.update({key: value for key, value in optional.items() if accepts_kwargs or key in parameters})
         return self.scanner_factory(**kwargs)
 
     def _return_series(
@@ -678,6 +743,9 @@ class PaperTradingService:
         return correlations
 
     def run_once(self) -> PaperServiceRunReport:
+        if self._closed:
+            raise RuntimeError("This paper service is closed.")
+        self.journal._require_writer()
         self._cycle_as_of = self._now_timestamp()
         self._persist_heartbeat(
             status="running",
@@ -695,24 +763,26 @@ class PaperTradingService:
         signal_times: dict[str, pd.Timestamp] = {}
 
         management_errors = 0
+        management_error_details = []
         for symbol in tracked_symbols:
+            if self._stop_event is not None and self._stop_event.is_set():
+                break
             try:
                 processed, closed_count, latest_time = (
                     self._process_unseen_candles(symbol)
                 )
-            except Exception:
+            except PaperPersistenceError:
+                raise
+            except Exception as exc:
                 management_errors += 1
+                management_error_details.append(f"{symbol}: {type(exc).__name__}: {exc}")
                 continue
             new_candles += processed
             closed_trades += closed_count
             if latest_time is not None:
                 signal_times[symbol] = latest_time
 
-        risk_timestamp = (
-            max(signal_times.values())
-            if signal_times
-            else pd.Timestamp.now(tz="UTC")
-        )
+        risk_timestamp = self._decision_time()
         risk_update = self.broker.evaluate_account_risk(
             risk_timestamp
         )
@@ -726,7 +796,15 @@ class PaperTradingService:
             pending_before - len(self.broker.pending_orders)
         )
 
-        results = self._scanner().scan(tracked_symbols)
+        results = []
+        if self._stop_event is None or not self._stop_event.is_set():
+            scan = self._scanner().scan
+            try:
+                parameters = inspect.signature(scan).parameters
+            except (TypeError, ValueError):
+                parameters = {}
+            results = (scan(tracked_symbols, cancel=self._stop_event)
+                       if "cancel" in parameters else scan(tracked_symbols))
 
         result_by_symbol = {
             result.symbol: result
@@ -767,6 +845,8 @@ class PaperTradingService:
         scan_errors = 0
 
         for result in results:
+            if self._stop_event is not None and self._stop_event.is_set():
+                break
             if result.error:
                 scan_errors += 1
                 continue
@@ -867,23 +947,43 @@ class PaperTradingService:
                 result.symbol
             )
 
+            evidence = {"policy_fingerprint": self.config.policy_fingerprint,
+                        "liquidity_preflight": self.config.liquidity_preflight,
+                        "signal_time": signal_time.isoformat()}
             try:
-                self.broker.submit_setup(
-                    symbol=result.symbol,
-                    timeframe=self.config.timeframe,
-                    setup=result.setup,
-                    created_at=signal_time,
-                    regime=(
-                        result.structure.regime.value
-                        if result.structure
-                        else ""
-                    ),
-                    strategy=strategy,
-                    expires_after_bars=(
-                        self.config.entry_expiry_bars
-                    ),
-                    correlations=correlations,
-                )
+                setup = result.setup
+                if self.config.liquidity_preflight:
+                    preflight = self.entry_preflight(
+                        exchange_id=self.config.exchange_id, market_type=self.config.market_type,
+                        symbol=result.symbol, setup=setup, account_equity=self.broker.account_equity(),
+                        risk_percent=self.config.risk_percent, notional_cap=self.config.notional_cap,
+                        fee_rate=self.config.fee_rate, slippage_bps=self.config.slippage_bps,
+                        min_blended_net_rr=self.config.min_blended_net_rr, now=self._now_timestamp,
+                    )
+                    evidence.update({key: value for key, value in preflight.items() if key != "setup"})
+                    if not preflight.get("allowed") or preflight.get("setup") is None:
+                        raise ValueError("; ".join(preflight.get("reasons") or ["Public entry preflight failed."]))
+                    setup = preflight["setup"]
+                submitted_at = self._now_timestamp()
+                if self.config.liquidity_preflight:
+                    expires = pd.Timestamp(preflight.get("expires_at"))
+                    if pd.isna(expires) or expires.tzinfo is None or expires <= submitted_at:
+                        raise ValueError("Public entry evidence is expired or its expiry is unverifiable.")
+                if self._stop_event is not None and self._stop_event.is_set():
+                    break
+                with self.broker.atomic_transition():
+                    order = self.broker.submit_setup(
+                        symbol=result.symbol, timeframe=self.config.timeframe, setup=setup,
+                        created_at=submitted_at,
+                        regime=result.structure.regime.value if result.structure else "",
+                        strategy=strategy, expires_after_bars=self.config.entry_expiry_bars,
+                        correlations=correlations,
+                    )
+                    evidence.update(order_id=order.order_id, submitted_at=submitted_at.isoformat())
+                    self.journal.record_signal(
+                        result.symbol, self.config.timeframe, strategy, signal, signal_time,
+                        action="SUBMITTED", evidence=evidence,
+                    )
             except ValueError as exc:
                 self.journal.record_signal(
                     result.symbol,
@@ -893,17 +993,10 @@ class PaperTradingService:
                     signal_time,
                     action="REJECTED",
                     reason=str(exc),
+                    evidence=evidence,
                 )
                 rejected += 1
             else:
-                self.journal.record_signal(
-                    result.symbol,
-                    self.config.timeframe,
-                    strategy,
-                    signal,
-                    signal_time,
-                    action="SUBMITTED",
-                )
                 submitted += 1
 
         report = PaperServiceRunReport(
@@ -928,12 +1021,14 @@ class PaperTradingService:
             universe_cached=self._universe_cached,
             universe_last_attempt_at=self._universe_status.get("last_attempt_at"),
             universe_last_success_at=self._universe_status.get("last_success_at"),
+            management_error_details=tuple(management_error_details),
         )
         self._persist_heartbeat(
             status="degraded" if self._universe_error or management_errors or scan_errors else "ok",
             last_cycle_result="degraded" if self._universe_error or management_errors or scan_errors else "ok",
             last_cycle_finished_at=self._utc_timestamp(),
             last_cycle_error=None,
+            management_errors=management_error_details,
         )
         return report
 
@@ -944,21 +1039,27 @@ class PaperTradingService:
         | None = None,
         on_error: Callable[[Exception], None] | None = None,
         max_cycles: int | None = None,
+        stop_event=None,
     ) -> None:
+        self._stop_event = stop_event
         cycles = 0
         while max_cycles is None or cycles < max_cycles:
+            if stop_event is not None and stop_event.is_set():
+                break
             try:
                 report = self.run_once()
             except Exception as exc:
-                self._persist_heartbeat(
-                    status="error",
-                    last_cycle_result="error",
-                    last_cycle_finished_at=self._utc_timestamp(),
-                    last_cycle_error=f"{type(exc).__name__}: {exc}",
-                )
+                if not self.journal.writer_failed:
+                    self._persist_heartbeat(
+                        status="error", last_cycle_result="error",
+                        last_cycle_finished_at=self._utc_timestamp(),
+                        last_cycle_error=f"{type(exc).__name__}: {exc}",
+                    )
                 if on_error is None:
                     raise
                 on_error(exc)
+                if isinstance(exc, PaperPersistenceError) or self.journal.writer_failed:
+                    raise
             else:
                 if on_cycle is not None:
                     on_cycle(report)
@@ -969,4 +1070,22 @@ class PaperTradingService:
                 and cycles >= max_cycles
             ):
                 break
-            sleep_fn(self.config.interval_seconds)
+            if stop_event is not None:
+                if stop_event.wait(self.config.interval_seconds):
+                    break
+            else:
+                sleep_fn(self.config.interval_seconds)
+
+    def close(self) -> None:
+        """Stop owning this account without closing its simulated positions."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if not self.journal.writer_failed:
+                self._persist_heartbeat(status="stopped", stopped_at=self._utc_timestamp())
+        except Exception:
+            # Closing the SQLite connection and writer lease must still happen.
+            pass
+        finally:
+            self.journal.close()

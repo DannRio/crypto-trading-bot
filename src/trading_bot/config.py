@@ -2,10 +2,51 @@
 import argparse
 from copy import deepcopy
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 from pathlib import Path
 import sys
+
+
+OPERATOR_POLICY_ID = "trend-continuation-v2-4h-1h-15m-v1"
+INDICATOR_WINDOW = 400
+OPERATOR_STRATEGIES = ("trend_continuation_v2",)
+
+
+def operator_policy(*, equity=10_000, risk_percent=0.25, notional=1_000,
+                    fee_rate=0.001, slippage_bps=5.0):
+    """The one supported operator policy; percentages enter in display units.
+
+    The fixed 400-candle indicator history fits inside a 500-candle response
+    after incomplete/future-to-decision bars are excluded. Historical research
+    must use the same window and preload at least 400 closed context candles.
+    Alternative strategies remain explicit research choices.
+    """
+    bounds = {"equity": (1, 1e9), "risk_percent": (0.01, 5),
+              "notional": (1, 1e8), "fee_rate": (0, .05), "slippage_bps": (0, 500)}
+    values = dict(equity=equity, risk_percent=risk_percent, notional=notional,
+                  fee_rate=fee_rate, slippage_bps=slippage_bps)
+    for name, (low, high) in bounds.items():
+        value = values[name]
+        if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
+            raise ValueError(f"Invalid operator policy value: {name}.")
+    settings = {
+        "strategy_names": OPERATOR_STRATEGIES,
+        "timeframe": "1h", "confirmation_timeframes": ("4h",), "entry_timeframe": "15m",
+        "candle_limit": 500, "indicator_window": INDICATOR_WINDOW,
+        "min_history_candles": INDICATOR_WINDOW, "risk_percent": float(risk_percent) / 100,
+        "fee_rate": float(fee_rate), "slippage_bps": float(slippage_bps),
+        "notional_cap": float(notional),
+        # Cash is an additional bound, not a floating replacement for the
+        # configured quote-currency cap. P&L must not change the policy hash.
+        "max_notional_percent": 1.0,
+        "min_confirmed_score": 70,
+        "min_blended_net_rr": 1.0,
+    }
+    payload = {"policy_id": OPERATOR_POLICY_ID, "settings": settings}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return {**payload, "fingerprint": hashlib.sha256(encoded.encode()).hexdigest()}
 
 
 @dataclass(frozen=True)

@@ -35,7 +35,8 @@ def test_confirmed_long_setup_has_risk_defined_prices():
     assert setup.stop_loss == pytest.approx(980.0)
     assert setup.take_profit_1 == pytest.approx(1020.0)
     assert setup.take_profit_2 == pytest.approx(1040.0)
-    assert setup.position_size == pytest.approx(5.0)
+    # Risk is bounded even when the fill is at the adverse entry-zone edge.
+    assert setup.position_size == pytest.approx(100.0 / (setup.entry_high - setup.stop_loss))
     assert setup.actual_risk_amount == pytest.approx(100.0)
 
 

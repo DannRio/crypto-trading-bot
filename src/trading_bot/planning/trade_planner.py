@@ -1,8 +1,10 @@
 import math
+from dataclasses import replace
 
 from trading_bot.analysis.market_structure import MarketStructure
 from trading_bot.core.enums import Signal, SetupStatus
 from trading_bot.planning.models import TradePlanConfig, TradeSetup
+from trading_bot.planning.validation import revalidate_trade_plan
 from trading_bot.risk import size_position_for_stop
 
 
@@ -112,23 +114,10 @@ def create_trade_setup(
             or direction * (take_profit_2 - take_profit_1) < 0):
         return None
 
-    # Use the worst admissible entry, not a flattering reference fill.
-    slip = slippage_bps / 10000
-    worst_entry = (entry_high if direction == 1 else entry_low) * (1 + direction * slip)
-    stop_fill = stop_loss * (1 - direction * slip)
-    target_fill = take_profit_2 * (1 - direction * slip)
-    net_loss = direction * (worst_entry - stop_fill) + fee_rate * (worst_entry + stop_fill)
-    net_gain = direction * (target_fill - worst_entry) - fee_rate * (worst_entry + target_fill)
-    net_rr = net_gain / net_loss if net_loss > 0 else 0.0
     quantity = sizing.position_size
-    if event_id is not None:
-        if net_rr < config.min_target_net_rr:
-            return None
-        quantity = min(quantity, sizing.target_risk_amount / net_loss,
-                       account_equity * config.max_notional_percent / (worst_entry * (1 + fee_rate)))
     risk_amount = abs(entry_price - stop_loss) * quantity
 
-    return TradeSetup(
+    setup = TradeSetup(
         signal=signal,
         status=status,
         score=score,
@@ -147,9 +136,25 @@ def create_trade_setup(
         reasons=reasons,
         event_id=event_id, setup_type=setup_type, anchor_price=anchor_price,
         cancel_price=cancel_price, event_time=event_time,
-        break_even_mode=config.break_even_mode, net_reward_to_risk=net_rr,
+        break_even_mode=config.break_even_mode,
         take_profit_1_fraction=config.take_profit_1_fraction,
         move_stop_to_break_even_after_tp1=(
             config.move_stop_to_break_even_after_tp1
         ),
     )
+    # All paths use the same adverse-zone cost calculation. The absolute cap
+    # remains fixed as equity changes; a percentage cap can further reduce it.
+    notional_cap = account_equity * config.max_notional_percent
+    if config.max_notional_value is not None:
+        notional_cap = min(notional_cap, config.max_notional_value)
+    checked, errors = revalidate_trade_plan(
+        setup, account_equity=account_equity, risk_percent=risk_percent,
+        notional_cap=notional_cap, fee_rate=fee_rate, slippage_bps=slippage_bps,
+        min_target_net_rr=config.min_target_net_rr, min_blended_net_rr=config.min_blended_net_rr,
+    )
+    if checked is None or errors:
+        return None
+    return replace(setup, **{key: checked[key] for key in (
+        "position_size", "notional_value", "actual_risk_amount", "reference_price_risk_amount",
+        "estimated_loss_at_stop", "net_reward_to_risk", "blended_target_net_reward_to_risk",
+    )})

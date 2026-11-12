@@ -7,38 +7,36 @@ import numpy as np
 import pandas as pd
 from fastapi.testclient import TestClient
 
-from trading_bot.analysis import MarketStructure
-from trading_bot.core.enums import MarketRegime, Signal, SetupStatus
-from trading_bot.execution import (
-    ManagedOrderStatus,
-    OrderStore,
-)
+from trading_bot.backtesting.models import BacktestResult
+from trading_bot.config import operator_policy
 from trading_bot.paper import PaperJournal
-from trading_bot.planning import TradeSetup
 from trading_bot.scanner import (
     MarketCandidate,
-    ScanResult,
     UniverseSelection,
 )
-from trading_bot.strategies import SetupAssessment
 from trading_bot.web import app as web
 
 
 client = TestClient(web.app)
 
 
-def test_health_confirms_orders_disabled():
+def test_health_confirms_idle_paper_mode_and_live_orders_disabled(monkeypatch):
+    monkeypatch.setattr(web, "_bot_runtime", lambda: SimpleNamespace(status=lambda: {
+        "active": False, "state": "stopped", "health": "not_started", "owner": "none"}))
     response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json()["live_execution"] is False
     assert response.json()["paper_execution"] is False
+    assert response.json()["mode"] == "PAPER_BOT"
 
 
 def test_dashboard_is_served():
     response = client.get("/")
     assert response.status_code == 200
-    assert "DRY RUN" in response.text
-    assert "LIVE ORDERS DISABLED" in response.text
+    assert "Paper Bot" in response.text
+    assert "Start paper bot" in response.text
+    assert 'id="stopBot"' in response.text
+    assert "Real exchange orders and live-execution controls are not part of this workflow." in response.text
 
 
 def test_reject_untrusted_market_inputs():
@@ -117,7 +115,7 @@ def test_scanner_respects_market_parameters(monkeypatch):
 
 
 def test_backtest_runs_on_synthetic_candles(monkeypatch):
-    n = 330
+    n = 500
     base = 100 + np.linspace(0, 25, n) + 2 * np.sin(np.arange(n) / 10)
     candles = pd.DataFrame({
         "timestamp": pd.date_range("2025-01-01", periods=n, freq="h", tz="UTC"),
@@ -132,12 +130,14 @@ def test_backtest_runs_on_synthetic_candles(monkeypatch):
         "/api/backtest?symbol=BTC/USD"
         "&data_source=live"
         "&strategies=trend_continuation"
+        "&confirm_timeframes=&entry_timeframe="
         "&min_score=65"
     )
     assert response.status_code == 200, response.text
     data = response.json()
     assert data["data_source"] == "live"
     assert data["data_rows"] == n - 1
+    assert data["evaluation_rows"] == n - 1 - 400
     assert data["metrics"]["initial_equity"] == 10000
     assert data["assumptions"]["fee_rate_per_side"] == 0.001
     assert data["assumptions"]["slippage_bps_per_side"] == 5.0
@@ -151,7 +151,7 @@ def test_backtest_uses_full_saved_local_dataset(
     monkeypatch,
     tmp_path,
 ):
-    n = 400
+    n = 480
     base = 100 + np.linspace(0, 40, n)
     candles = pd.DataFrame({
         "timestamp": pd.date_range(
@@ -186,6 +186,7 @@ def test_backtest_uses_full_saved_local_dataset(
             "timeframe": "1h",
             "data_source": "local",
             "strategies": "trend_continuation",
+            "confirm_timeframes": "", "entry_timeframe": "",
         },
     )
 
@@ -206,7 +207,7 @@ def test_local_backtest_date_range_filters_saved_dataset(
 ):
     timestamps = pd.date_range(
         "2023-01-01",
-        periods=24 * 20,
+        periods=24 * 40,
         freq="h",
         tz="UTC",
     )
@@ -236,17 +237,20 @@ def test_local_backtest_date_range_filters_saved_dataset(
             "symbol": "BTC/USDT",
             "timeframe": "1h",
             "data_source": "local",
-            "start": "2023-01-05",
-            "end": "2023-01-15",
+            "start": "2023-01-20",
+            "end": "2023-01-30",
+            "strategies": "trend_continuation",
+            "confirm_timeframes": "", "entry_timeframe": "",
         },
     )
 
-    # Ten days is below the 220-candle minimum only if the end date were
-    # treated as exclusive midnight incorrectly. Inclusive-day handling
-    # yields 264 candles here.
+    # A date-only end includes the whole day. Indicator warmup precedes the
+    # requested evaluation period and must not consume its first 400 candles.
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["data_rows"] == 24 * 11
+    assert body["data_rows"] == 400 + 24 * 11
+    assert body["evaluation_rows"] == 24 * 11
+    assert body["evaluation_start"].startswith("2023-01-20")
 
 
 def test_local_backtest_finds_legacy_cwd_history(
@@ -254,7 +258,7 @@ def test_local_backtest_finds_legacy_cwd_history(
     tmp_path,
 ):
     history_root = tmp_path / "legacy" / "data" / "history"
-    n = 260
+    n = 480
     base = 100 + np.linspace(0, 10, n)
     candles = pd.DataFrame({
         "timestamp": pd.date_range(
@@ -292,6 +296,8 @@ def test_local_backtest_finds_legacy_cwd_history(
             "symbol": "BTC/USDT",
             "timeframe": "1h",
             "data_source": "local",
+            "strategies": "trend_continuation",
+            "confirm_timeframes": "", "entry_timeframe": "",
         },
     )
 
@@ -483,209 +489,123 @@ def test_paper_status_endpoint_reads_persistent_service_state(
 
 
 
-def _confirmed_web_scan_result():
-    signal_time = pd.Timestamp.now(tz="UTC").floor("h")
-    assessment = SetupAssessment(
-        signal=Signal.LONG,
-        status=SetupStatus.CONFIRMED,
-        score=82,
-        reason="server-generated test setup",
-        reasons=("server-generated test setup",),
-        strategy="trend_continuation",
-    )
-    setup = TradeSetup(
-        signal=Signal.LONG,
-        status=SetupStatus.CONFIRMED,
-        score=82,
-        reference_entry=100.0,
-        entry_low=99.5,
-        entry_high=100.5,
-        stop_loss=95.0,
-        take_profit_1=105.0,
-        take_profit_2=110.0,
-        reward_to_risk_1=1.0,
-        reward_to_risk_2=2.0,
-        position_size=2.0,
-        notional_value=200.0,
-        target_risk_amount=10.0,
-        actual_risk_amount=10.0,
-        reasons=("server-generated test setup",),
-    )
-    structure = MarketStructure(
-        regime=MarketRegime.BULL_TREND,
-        support=90.0,
-        resistance=110.0,
-        atr_pct=0.01,
-        volume_ratio=1.2,
-        higher_high=True,
-        higher_low=True,
-        lower_high=False,
-        lower_low=False,
-        high_volatility=False,
-    )
-    return ScanResult(
-        exchange_id="kucoin",
-        market_type="spot",
-        symbol="BTC/USDT",
-        timeframe="1h",
-        assessment=assessment,
-        structure=structure,
-        setup=setup,
-        data_quality=None,
-        signal_time=signal_time,
-    )
+def test_removed_assisted_and_execution_routes_stay_unavailable():
+    for method, route in (
+        ("post", "/api/assisted/stage"),
+        ("post", "/api/assisted/example/approve"),
+        ("post", "/api/assisted/example/reject"),
+        ("get", "/api/assisted/intents"),
+        ("get", "/api/orders/status"),
+        ("get", "/api/execution/status"),
+    ):
+        response = getattr(client, method)(route)
+        assert response.status_code == 404, route
 
 
-def test_assisted_stage_approve_and_list_are_dry_run(
-    monkeypatch,
-    tmp_path,
-):
-    class FakeScanner:
-        def __init__(self, **kwargs):
-            pass
-
-        def scan_symbol(self, symbol):
-            result = _confirmed_web_scan_result()
-            assert symbol == result.symbol
-            return result
-
-    monkeypatch.setattr(web, "MarketScanner", FakeScanner)
-    monkeypatch.setattr(
-        web,
-        "ASSISTED_DB_PATH",
-        tmp_path / "assisted.db",
-    )
-    monkeypatch.setattr(
-        web,
-        "ORDER_DB_PATH",
-        tmp_path / "orders.db",
-    )
-
-    stage = client.post(
-        "/api/assisted/stage",
-        json={
-            "exchange": "kucoin",
-            "market_type": "spot",
-            "symbol": "BTC/USDT",
-            "timeframe": "1h",
-            "confirm_timeframes": ["4h"],
-            "entry_timeframe": "15m",
-            "risk_percent": 1.0,
-            "min_score": 70,
-            "strategies": ["trend_continuation"],
-        },
-    )
-    assert stage.status_code == 200, stage.text
-    staged = stage.json()
-    assert staged["created"] is True
-    assert staged["live_execution"] is False
-    assert staged["intent"]["status"] == "PENDING_APPROVAL"
-
-    intent_id = staged["intent"]["intent_id"]
-
-    approve = client.post(
-        f"/api/assisted/{intent_id}/approve",
-        json={
-            "actor": "Danny",
-            "note": "Reviewed in dashboard.",
-        },
-    )
-    assert approve.status_code == 200, approve.text
-    approved = approve.json()
-    assert approved["live_execution"] is False
-    assert approved["intent"]["status"] == "EXECUTED"
-    assert approved["mode"] == "MANAGED_DRY_RUN"
-    assert approved["receipt"]["mode"] == "MANAGED_DRY_RUN"
-    assert approved["receipt"]["external_order_id"] is not None
-
-    order_store = OrderStore(tmp_path / "orders.db")
-    managed = order_store.list_orders()
-    assert len(managed) == 1
-    assert managed[0].intent_id == intent_id
-    assert managed[0].status == ManagedOrderStatus.FILLED
-    assert managed[0].external_order_id == approved["receipt"]["external_order_id"]
-    order_store.close()
-
-    order_status = client.get("/api/orders/status")
-    assert order_status.status_code == 200
-    order_body = order_status.json()
-    assert order_body["mode"] == "MANAGED_DRY_RUN"
-    assert order_body["live_execution"] is False
-    assert len(order_body["orders"]) == 1
-    assert order_body["orders"][0]["status"] == "FILLED"
-    assert order_body["orders"][0]["intent_id"] == intent_id
-
-    queue = client.get("/api/assisted/intents")
-    assert queue.status_code == 200
-    body = queue.json()
-    assert body["mode"] == "DRY_RUN"
-    assert body["live_execution"] is False
-    assert len(body["receipts"]) == 1
-    assert body["receipts"][0]["intent_id"] == intent_id
-
-
-def test_assisted_reject_prevents_later_approval(
-    monkeypatch,
-    tmp_path,
-):
-    class FakeScanner:
-        def __init__(self, **kwargs):
-            pass
-
-        def scan_symbol(self, symbol):
-            return _confirmed_web_scan_result()
-
-    monkeypatch.setattr(web, "MarketScanner", FakeScanner)
-    monkeypatch.setattr(
-        web,
-        "ASSISTED_DB_PATH",
-        tmp_path / "assisted.db",
-    )
-
-    stage = client.post(
-        "/api/assisted/stage",
-        json={
-            "exchange": "kucoin",
-            "market_type": "spot",
-            "symbol": "BTC/USDT",
-            "timeframe": "1h",
-        },
-    )
-    intent_id = stage.json()["intent"]["intent_id"]
-
-    rejected = client.post(
-        f"/api/assisted/{intent_id}/reject",
-        json={"actor": "Danny", "note": "Skip."},
-    )
-    assert rejected.status_code == 200
-    assert rejected.json()["intent"]["status"] == "REJECTED"
-
-    approve = client.post(
-        f"/api/assisted/{intent_id}/approve",
-        json={"actor": "Danny"},
-    )
-    assert approve.status_code == 409
-
-
-
-def test_live_execution_status_endpoint_is_read_only(
-    monkeypatch,
-    tmp_path,
-):
-    live_db = tmp_path / "live_orders.db"
-    monkeypatch.setattr(
-        web,
-        "LIVE_ORDER_DB_PATH",
-        live_db,
-    )
-
-    response = client.get(
-        "/api/execution/status"
-    )
-    assert response.status_code == 200
+def test_default_core_backtest_uses_shared_policy_and_preserves_requested_warmup(monkeypatch, tmp_path):
+    start = pd.Timestamp("2025-04-01T00:00:00Z")
+    end = start + pd.Timedelta(days=1)
+    store = web.HistoricalDataStore(tmp_path)
+    for timeframe in ("1h", "4h", "15m"):
+        delta = pd.Timedelta(timeframe.replace("m", "min"))
+        times = pd.date_range(start=start - 450 * delta, end=end + delta, freq=delta)
+        raw = pd.DataFrame({"timestamp": times, "open": 100., "high": 101.,
+                            "low": 99., "close": 100., "volume": 1000.})
+        store.upsert("kucoin", "spot", "BTC/USDT", timeframe, raw)
+    monkeypatch.setattr(web, "HISTORY_ROOT", tmp_path)
+    captured = {}
+    def backtester(data, **kwargs):
+        captured.update(kwargs)
+        captured["data"] = data
+        return BacktestResult(initial_equity=10000, final_equity=10000, total_return_pct=0,
+            max_drawdown_pct=0, total_trades=0, win_rate_pct=0, profit_factor=0,
+            average_pnl=0, trades=pd.DataFrame())
+    def unexpected_public_request(**kwargs):
+        raise AssertionError("Saved-data validation must not request live exchange data.")
+    monkeypatch.setattr(web, "run_decision_backtest", backtester)
+    monkeypatch.setattr(web, "get_ohlcv", unexpected_public_request)
+    response = client.get("/api/backtest", params={"start": start.isoformat(), "end": end.isoformat()})
+    assert response.status_code == 200, response.text
     body = response.json()
-    assert body["mode"] == "LIVE_OPERATOR_CLI_ONLY"
-    assert body["web_live_submission"] is False
-    assert body["control"]["armed"] is False
-    assert body["control"]["halted"] is False
-    assert body["context"] is None
+    assert body["policy"]["fingerprint"] == operator_policy()["fingerprint"]
+    assert body["research_variant"] is False
+    assert body["evaluation_rows"] == 24
+    assert body["data_rows"] == 424
+    assert body["evaluation_start"] == start.isoformat()
+    assert body["evaluation_end"] == end.isoformat()
+    assert captured["data"].iloc[400]["timestamp"] == start
+    assert captured["data"].iloc[0]["timestamp"] == start - pd.Timedelta(hours=400)
+    assert captured["data"].iloc[-1]["timestamp"] == end - pd.Timedelta(hours=1)
+    assert captured["warmup_candles"] == captured["decision_lookback"] == 400
+    assert captured["strategy_names"] == ("trend_continuation_v2",)
+    assert captured["risk_percent"] == .0025
+    assert captured["allow_short"] is False
+    assert captured["confirmation_timeframes"] == ("4h",)
+    assert captured["entry_timeframe"] == "15m"
+    assert set(captured["secondary_data"]) == {"4h", "15m"}
+    plan = captured["trade_plan_config"]
+    assert plan.max_notional_value == 1000
+    assert plan.max_notional_percent == 1
+    assert plan.min_blended_net_rr == 1
+    assert body["assumptions"]["liquidity_replay"] is False
+    assert body["assumptions"]["portfolio_risk_replay"] is False
+
+
+def test_requested_backtest_start_requires_a_complete_earlier_indicator_window(monkeypatch, tmp_path):
+    times = pd.date_range("2025-01-01", periods=480, freq="h", tz="UTC")
+    raw = pd.DataFrame({"timestamp": times, "open": 100., "high": 101.,
+                        "low": 99., "close": 100., "volume": 1000.})
+    web.HistoricalDataStore(tmp_path).upsert("kucoin", "spot", "BTC/USDT", "1h", raw)
+    monkeypatch.setattr(web, "HISTORY_ROOT", tmp_path)
+    response = client.get("/api/backtest", params={"start": times[399].isoformat(),
+                          "confirm_timeframes": "", "entry_timeframe": ""})
+    assert response.status_code == 422
+    assert "400 earlier 1h candles" in response.json()["detail"]
+
+
+def _save_core_history_with_primary_defect(root, mutate_primary):
+    start = pd.Timestamp("2025-04-01T00:00:00Z")
+    end = start + pd.Timedelta(days=1)
+    store = web.HistoricalDataStore(root)
+    for timeframe in ("1h", "4h", "15m"):
+        delta = pd.Timedelta(timeframe.replace("m", "min"))
+        times = pd.date_range(start=start - 450 * delta, end=end, freq=delta)
+        raw = pd.DataFrame({"timestamp": times, "open": 100., "high": 101.,
+                            "low": 99., "close": 100., "volume": 1000.})
+        if timeframe == "1h":
+            raw = mutate_primary(raw, start, end)
+        store.upsert("kucoin", "spot", "BTC/USDT", timeframe, raw)
+    return {"start": start.isoformat(), "end": end.isoformat()}
+
+
+def test_requested_backtest_end_cannot_silently_use_shorter_primary_history(monkeypatch, tmp_path):
+    params = _save_core_history_with_primary_defect(tmp_path,
+        lambda raw, start, end: raw[raw["timestamp"] < end - pd.Timedelta(hours=1)])
+    monkeypatch.setattr(web, "HISTORY_ROOT", tmp_path)
+    calls = []
+    def unexpected_backtest(*args, **kwargs):
+        calls.append(True)
+        raise AssertionError("An incomplete requested period must not produce performance results.")
+    monkeypatch.setattr(web, "run_decision_backtest", unexpected_backtest)
+    response = client.get("/api/backtest", params=params)
+    assert response.status_code == 422, response.text
+    assert "primary dataset ends before the requested" in response.json()["detail"]
+    assert "metrics" not in response.json()
+    assert calls == []
+
+
+def test_missing_primary_candle_is_rejected_before_backtesting(monkeypatch, tmp_path):
+    params = _save_core_history_with_primary_defect(tmp_path,
+        lambda raw, start, end: raw[raw["timestamp"] != start + pd.Timedelta(hours=5)])
+    monkeypatch.setattr(web, "HISTORY_ROOT", tmp_path)
+    calls = []
+    def unexpected_backtest(*args, **kwargs):
+        calls.append(True)
+        raise AssertionError("A gapped primary period must not reach the backtester.")
+    monkeypatch.setattr(web, "run_decision_backtest", unexpected_backtest)
+    response = client.get("/api/backtest", params=params)
+    assert response.status_code == 422, response.text
+    assert "1 missing candle interval" in response.json()["detail"]
+    assert "Source:" in response.json()["detail"]
+    assert "metrics" not in response.json()
+    assert calls == []
