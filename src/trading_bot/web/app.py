@@ -22,6 +22,9 @@ from trading_bot.assisted import (
     IntentStore,
 )
 from trading_bot.backtesting import run_decision_backtest
+from trading_bot.research.diagnostics import trade_diagnostics
+from trading_bot.research.exit_ablation import run_exit_ablation
+from trading_bot.research.evaluation import run_out_of_sample_evaluation
 from trading_bot.execution import (
     LiveExecutionGuard,
     ManagedDryRunBrokerAdapter,
@@ -729,14 +732,41 @@ def backtest(
     risk_percent: float = Query(1.0, gt=0, le=5),
     min_score: int = Query(70, ge=0, le=100),
     strategies: str = Query("trend_continuation", max_length=200),
+    confirm_timeframes: str = Query("", max_length=100),
+    entry_timeframe: str = Query("", max_length=20),
+    execution_timeframe: str = Query("", max_length=20),
+    compare_exits: bool = Query(False),
+    validate_oos: bool = Query(False),
     fee_rate: float = Query(0.001, ge=0, le=0.05),
     slippage_bps: float = Query(5.0, ge=0, le=500),
 ):
     _validate_exchange(exchange, market_type, timeframe)
     symbol = _validate_symbol(symbol)
     strategy_names = _parse_strategies(strategies)
+    htf = _parse_timeframes(confirm_timeframes)
+    ltf = entry_timeframe.strip() or None
+    execution_tf = execution_timeframe.strip() or None
+    from trading_bot.scanner.multi_timeframe import (
+        validate_confirmation_timeframes,
+        validate_entry_timeframe,
+    )
+    try:
+        htf = validate_confirmation_timeframes(timeframe, htf)
+        ltf = validate_entry_timeframe(timeframe, ltf)
+        execution_tf = validate_entry_timeframe(timeframe, execution_tf)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if validate_oos and data_source != "local":
+        raise HTTPException(422, "Chronological validation requires saved local multi-year data.")
+    if (htf or ltf or execution_tf) and data_source != "local":
+        raise HTTPException(
+            422,
+            "Historical multi-timeframe confirmation requires saved local "
+            "datasets for every selected timeframe.",
+        )
 
     try:
+        secondary_data = {}
         if data_source == "local":
             store, dataset_path, checked_paths = (
                 _history_store_for_dataset(
@@ -797,6 +827,21 @@ def backtest(
 
             closed = filtered.reset_index(drop=True)
             source_path = str(dataset_path)
+
+            for extra_timeframe in dict.fromkeys((*htf, *((ltf,) if ltf else ()), *((execution_tf,) if execution_tf else ()))):
+                extra_store, extra_path, extra_checked = _history_store_for_dataset(
+                    exchange, market_type, symbol, extra_timeframe
+                )
+                extra_candles = extra_store.load(
+                    exchange, market_type, symbol, extra_timeframe
+                )
+                if extra_candles.empty:
+                    checked = " | ".join(str(path) for path in extra_checked)
+                    raise HTTPException(
+                        404,
+                        f"Missing {extra_timeframe} confirmation dataset. Checked: {checked}",
+                    )
+                secondary_data[extra_timeframe] = extra_candles
         else:
             candles = get_ohlcv(
                 symbol=symbol,
@@ -817,7 +862,13 @@ def backtest(
         if not quality.valid:
             raise HTTPException(
                 422,
-                "Not enough valid closed candles for backtesting.",
+                "Historical dataset failed validation for "
+                f"{exchange}/{market_type}/{symbol}/{timeframe}: "
+                + "; ".join(quality.issues)
+                + (
+                    f" Source: {source_path}"
+                    if source_path is not None else ""
+                ),
             )
 
         result = run_decision_backtest(
@@ -829,6 +880,11 @@ def backtest(
             slippage_bps=slippage_bps,
             allow_short=market_type != "spot",
             strategy_names=strategy_names,
+            primary_timeframe=timeframe,
+            confirmation_timeframes=htf,
+            entry_timeframe=ltf,
+            secondary_data=secondary_data,
+            execution_timeframe=execution_tf,
         )
     except HTTPException:
         raise
@@ -843,6 +899,52 @@ def backtest(
             502,
             "Market data or backtesting failed.",
         )
+
+    exit_ablation = None
+    if compare_exits:
+        exit_ablation_frame, _ = run_exit_ablation(
+            closed,
+            initial_equity=equity,
+            risk_percent=risk_percent / 100,
+            min_confirmed_score=min_score,
+            fee_rate=fee_rate,
+            slippage_bps=slippage_bps,
+            allow_short=market_type != "spot",
+            strategy_names=strategy_names,
+            primary_timeframe=timeframe,
+            confirmation_timeframes=htf,
+            entry_timeframe=ltf,
+            execution_timeframe=execution_tf,
+            secondary_data=secondary_data,
+        )
+        exit_ablation = _safe(exit_ablation_frame.to_dict("records"))
+
+    oos_summary = None
+    if validate_oos:
+        if len(closed) < 1500:
+            raise HTTPException(
+                422, "At least 1500 historical candles required for train/validation/test."
+            )
+        train_cut = closed["timestamp"].iloc[int(len(closed) * 0.60)]
+        validation_cut = closed["timestamp"].iloc[int(len(closed) * 0.80)]
+        oos_frame, _ = run_out_of_sample_evaluation(
+            closed,
+            train_cutoff=train_cut,
+            validation_cutoff=validation_cut,
+            initial_equity=equity,
+            risk_percent=risk_percent / 100,
+            min_confirmed_score=min_score,
+            fee_rate=fee_rate,
+            slippage_bps=slippage_bps,
+            allow_short=market_type != "spot",
+            strategy_names=strategy_names,
+            primary_timeframe=timeframe,
+            confirmation_timeframes=htf,
+            entry_timeframe=ltf,
+            execution_timeframe=execution_tf,
+            secondary_data=secondary_data,
+        )
+        oos_summary = _safe(oos_frame.to_dict("records"))
 
     data_start = (
         closed["timestamp"].min()
@@ -866,11 +968,14 @@ def backtest(
         "data_start": _safe(data_start),
         "data_end": _safe(data_end),
         "strategies": list(strategy_names),
+        "confirmation_timeframes": list(htf),
+        "entry_timeframe": ltf,
+        "execution_timeframe": execution_tf,
         "assumptions": {
             "fee_rate_per_side": fee_rate,
             "slippage_bps_per_side": slippage_bps,
             "min_score": min_score,
-            "single_timeframe_only": True,
+            "single_timeframe_only": not bool(htf or ltf or execution_tf),
         },
         "metrics": _safe({
             "initial_equity": result.initial_equity,
@@ -885,10 +990,16 @@ def backtest(
         "recent_trades": _safe(
             result.trades.tail(10).to_dict("records")
         ),
+        "diagnostics": _safe(trade_diagnostics(result.trades, equity)),
+        "exit_ablation": exit_ablation,
+        "chronological_validation": oos_summary,
         "warning": (
-            "This historical backtest is single-timeframe. "
-            "Scanner higher-timeframe confirmation and lower-timeframe "
-            "entry-trigger filters are not applied by this endpoint yet."
+            "Historical MTF confirmation is as-of closed candles. Intrabar "
+            "fills are resolved with lower timeframe OHLC when an execution "
+            "timeframe is selected; events inside each child candle remain "
+            "ambiguous and are resolved conservatively."
+            if htf or ltf or execution_tf else
+            "Single-timeframe baseline; scanner MTF gates are not applied."
         ),
     }
 

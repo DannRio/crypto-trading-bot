@@ -1,7 +1,9 @@
+from dataclasses import replace
+
 import pandas as pd
 
 from trading_bot.analysis import analyze_market_structure
-from trading_bot.core.enums import SetupStatus
+from trading_bot.core.enums import SetupStatus, Signal
 from trading_bot.decision.models import DecisionResult
 from trading_bot.planning import TradePlanConfig, create_trade_setup
 from trading_bot.strategies import (
@@ -24,7 +26,10 @@ class DecisionEngine:
         strategy_names: tuple[str, ...] = DEFAULT_STRATEGIES,
         strategy_parameters: dict[str, dict] | None = None,
         trade_plan_config: TradePlanConfig | None = None,
+        strategy_plan_configs: dict[str, TradePlanConfig] | None = None,
+        allow_short: bool = True,
     ):
+        self.allow_short = allow_short
         self.account_equity = account_equity
         self.risk_percent = risk_percent
         self.min_confirmed_score = min_confirmed_score
@@ -36,6 +41,7 @@ class DecisionEngine:
         self.trade_plan_config = (
             trade_plan_config or TradePlanConfig()
         )
+        self.strategy_plan_configs = strategy_plan_configs or {}
 
     def evaluate(self, data: pd.DataFrame) -> DecisionResult:
         structure = analyze_market_structure(data)
@@ -47,6 +53,14 @@ class DecisionEngine:
             min_forming_score=self.min_forming_score,
             strategy_parameters=self.strategy_parameters,
         )
+        if not self.allow_short:
+            candidates = tuple(
+                replace(
+                    item, signal=Signal.NO_TRADE, status=SetupStatus.NO_TRADE,
+                    reason=item.reason + "; SHORT unavailable for this market.",
+                ) if item.signal == Signal.SHORT else item
+                for item in candidates
+            )
         assessment = select_best_assessment(candidates)
 
         setup = None
@@ -62,7 +76,9 @@ class DecisionEngine:
                 structure=structure,
                 account_equity=self.account_equity,
                 risk_percent=self.risk_percent,
-                config=self.trade_plan_config,
+                config=self.strategy_plan_configs.get(
+                    assessment.strategy, self.trade_plan_config
+                ),
             )
 
         return DecisionResult(

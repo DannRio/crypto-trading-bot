@@ -1,3 +1,5 @@
+from pathlib import Path
+
 """Smoke-test read-only dashboard endpoints without external API calls."""
 from types import SimpleNamespace
 
@@ -192,8 +194,8 @@ def test_backtest_uses_full_saved_local_dataset(
     assert body["data_source"] == "local"
     assert body["data_rows"] == n
     assert body["data_start"].startswith("2023-01-01")
-    assert body["source_path"].endswith(
-        "kucoin/spot/BTC_USDT/1h.csv"
+    assert Path(body["source_path"]).parts[-4:] == (
+        "kucoin", "spot", "BTC_USDT", "1h.csv"
     )
     assert body["assumptions"]["single_timeframe_only"] is True
 
@@ -296,8 +298,8 @@ def test_local_backtest_finds_legacy_cwd_history(
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["data_rows"] == n
-    assert body["source_path"].endswith(
-        "data/history/kucoin/spot/BTC_USDT/1h.csv"
+    assert Path(body["source_path"]).parts[-6:] == (
+        "data", "history", "kucoin", "spot", "BTC_USDT", "1h.csv"
     )
 
 

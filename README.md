@@ -705,3 +705,45 @@ Reconcile again and explicitly arm before any later live submission.
 ### What this does not mean
 
 Version 0.16 is **not autonomous live trading**. The scanner does not automatically call the live adapter. The web dashboard has no live-submit controls. Continuous WebSocket execution, live account/position risk reconciliation, explicit derivatives leverage/margin/position-mode controls, monitoring/alerting, and VPS/Docker deployment remain separate work.
+
+
+## Research redesign (draft PR #30)
+
+**The redesigned research workflow is intentionally not connected to live execution.**
+Use `trend_continuation` as the original baseline and
+`trend_continuation_v2` for the event-driven entry candidate.
+Historical scanner-aligned 4h/1h/15m gates and optional child-candle execution
+require saved datasets for **each selected timeframe**.
+All candle timestamps are treated as candle opens; secondary candles only
+become available after their close time.
+
+Download the matching datasets using the existing research CLI:
+
+~~~powershell
+crypto-research download --exchange kucoin --market-type spot --symbols BTC/USDT --timeframes 15m,1h,4h --start 2023-01-01 --end 2026-01-01
+~~~
+
+Run the dashboard and choose:
+- Saved local historical dataset, KuCoin, spot, BTC/USDT, 1h
+- Backtest strategy: Trend Continuation v2
+- Scanner higher-timeframe confirmation: 4h, entry timeframe: 15m
+- Historical MTF confirmation: On
+- Execution candles: 15m intrabar
+- Optional: exit ablation and chronological validation
+
+The baseline MTF toggle and intrabar execution toggle are **independent**:
+one controls eligibility for new signals; the other controls chronological
+execution of fills and stops. Even at 15m resolution, OHLC path ambiguity
+remains inside each 15m candle and is resolved conservatively. Missing
+child candles fail the backtest instead of silently falling back to 1h.
+
+The exit ablation compares three predeclared policies, not optimized
+parameters: full size to 2R; 50% out at 1R with no BE move; and 50% at
+1R with BE on the remainder. Strategy-plan overrides are available in
+Python via `DecisionEngine(strategy_plan_configs={...})` and
+`run_decision_backtest(strategy_plan_configs={...})`.
+
+The chronological 60/20/20 validation panel is *descriptive*. It is not
+a substitute for untouched out-of-sample assets, walk-forward experiments,
+multiple regimes, and forward paper trading. Live trading must remain
+disabled until the research results establish positive net expectancy.

@@ -26,6 +26,7 @@ def assessment(strategy, status, score):
 def test_registry_exposes_all_candidate_strategies():
     assert available_strategies() == (
         "trend_continuation",
+        "trend_continuation_v2",
         "breakout_retest",
         "range_mean_reversion",
     )
