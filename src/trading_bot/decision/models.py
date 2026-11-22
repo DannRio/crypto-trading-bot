@@ -11,3 +11,4 @@ class DecisionResult:
     structure: MarketStructure
     setup: TradeSetup | None
     candidates: tuple[SetupAssessment, ...] = ()
+    ungated_candidates: tuple[SetupAssessment, ...] = ()

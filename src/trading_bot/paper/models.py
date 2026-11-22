@@ -49,6 +49,12 @@ class PaperOrder:
     realized_exit_value: float = 0.0
     effective_stop: float | None = None
 
+    event_id: str | None = None
+    setup_type: str = "legacy_state"
+    cancel_price: float | None = None
+    break_even_mode: str = "price"
+    risk_budget: float = 0.0
+
 
 @dataclass
 class PaperPosition:
@@ -77,6 +83,10 @@ class PaperPosition:
     realized_exit_fees: float = 0.0
     realized_exit_value: float = 0.0
 
+    event_id: str | None = None
+    setup_type: str = "legacy_state"
+    break_even_mode: str = "price"
+
 
 @dataclass(frozen=True)
 class PaperTrade:
@@ -99,6 +109,9 @@ class PaperTrade:
     regime: str
     strategy: str
     tp1_hit: bool = False
+
+    event_id: str | None = None
+    setup_type: str = "legacy_state"
 
 
 @dataclass(frozen=True)

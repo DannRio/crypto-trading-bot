@@ -1,4 +1,5 @@
 from dataclasses import asdict, dataclass, field
+import inspect
 import json
 import math
 import time
@@ -7,7 +8,8 @@ from typing import Callable
 import pandas as pd
 
 from trading_bot.core.enums import Signal, SetupStatus
-from trading_bot.data import get_ohlcv
+from trading_bot.data import get_ohlcv, timeframe_to_milliseconds, validate_ohlcv
+from trading_bot.data.validation import latest_expected_close
 from trading_bot.paper.broker import PaperBroker
 from trading_bot.paper.journal import PaperJournal
 from trading_bot.paper.models import PaperAccountSnapshot
@@ -17,6 +19,7 @@ from trading_bot.scanner import (
     MarketScanner,
     UniverseConfig,
 )
+from trading_bot.scanner.multi_timeframe import regime_alignment
 from trading_bot.strategies import (
     DEFAULT_STRATEGIES,
     normalize_strategy_names,
@@ -38,6 +41,7 @@ class PaperServiceConfig:
     max_spread_bps: float | None = None
     min_history_candles: int = 220
     max_history_probes: int = 60
+    max_ticker_requests: int = 200
     candle_limit: int = 500
     starting_equity: float = 10_000
     risk_percent: float = 0.01
@@ -47,6 +51,7 @@ class PaperServiceConfig:
     slippage_bps: float = 5.0
     entry_expiry_bars: int = 3
     interval_seconds: float = 60.0
+    universe_refresh_seconds: float = 900.0
     correlation_lookback: int = 120
     min_correlation_samples: int = 60
     portfolio_risk: PortfolioRiskConfig = field(
@@ -68,6 +73,11 @@ class PaperServiceConfig:
             raise ValueError("entry_expiry_bars must be positive.")
         if self.interval_seconds <= 0:
             raise ValueError("interval_seconds must be positive.")
+        if (
+            not math.isfinite(self.universe_refresh_seconds)
+            or self.universe_refresh_seconds <= 0
+        ):
+            raise ValueError("universe_refresh_seconds must be finite and positive.")
         if self.candle_limit < 2:
             raise ValueError("candle_limit must be at least 2.")
         if self.min_history_candles < 0:
@@ -78,6 +88,8 @@ class PaperServiceConfig:
             raise ValueError(
                 "max_history_probes must be positive."
             )
+        if self.max_ticker_requests <= 0:
+            raise ValueError("max_ticker_requests must be positive.")
         if self.correlation_lookback < 2:
             raise ValueError(
                 "correlation_lookback must be at least 2."
@@ -119,6 +131,11 @@ class PaperServiceRunReport:
     weekly_loss_pct: float
     drawdown_pct: float
     snapshot: PaperAccountSnapshot
+    universe_error: str | None = None
+    universe_warnings: tuple[str, ...] = ()
+    universe_cached: bool = False
+    universe_last_attempt_at: str | None = None
+    universe_last_success_at: str | None = None
 
 
 class PaperTradingService:
@@ -133,12 +150,23 @@ class PaperTradingService:
         scanner_factory: Callable = MarketScanner,
         universe_factory: Callable = DynamicMarketUniverse,
         restore_state: bool = True,
+        monotonic_clock: Callable | None = None,
+        utc_now: Callable | None = None,
     ):
         self.config = config
         self.journal = journal
         self.data_fetcher = data_fetcher
         self.scanner_factory = scanner_factory
         self.universe_factory = universe_factory
+        self._monotonic_clock = monotonic_clock or time.monotonic
+        self._utc_now = utc_now or (lambda: pd.Timestamp.now(tz="UTC"))
+        self._universe_selector = None
+        self._universe_symbols: list[str] = []
+        self._universe_selected_monotonic: float | None = None
+        self._universe_error: str | None = None
+        self._universe_warnings: tuple[str, ...] = ()
+        self._universe_cached = False
+        self._cycle_as_of: pd.Timestamp | None = None
         self._cycle_data_cache: dict[
             tuple[str, str, int],
             pd.DataFrame,
@@ -152,6 +180,7 @@ class PaperTradingService:
         )
 
         self._ensure_service_metadata()
+        self._restore_universe_status()
         if restore_state:
             self.broker.restore_from_journal()
 
@@ -187,6 +216,35 @@ class PaperTradingService:
             "fee_rate": self.config.fee_rate,
             "slippage_bps": self.config.slippage_bps,
             "risk_policy": self._risk_policy_json(),
+            "signal_policy": json.dumps(
+                {
+                    "strategy_names": normalize_strategy_names(self.config.strategy_names),
+                    "risk_percent": self.config.risk_percent,
+                    "min_confirmed_score": self.config.min_confirmed_score,
+                    "confirmation_timeframes": self.config.confirmation_timeframes,
+                    "entry_timeframe": self.config.entry_timeframe,
+                    "candle_limit": self.config.candle_limit,
+                    "entry_expiry_bars": self.config.entry_expiry_bars,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "universe_policy": json.dumps(
+                {
+                    "auto_universe": self.config.auto_universe,
+                    "symbols": sorted(set(self.config.symbols)) if not self.config.auto_universe else [],
+                    "quote_currencies": sorted(set(quote.upper() for quote in self.config.quote_currencies)),
+                    "max_markets": self.config.max_markets,
+                    "min_quote_volume": self.config.min_quote_volume,
+                    "max_spread_bps": self.config.max_spread_bps,
+                    "min_history_candles": self.config.min_history_candles,
+                    "max_history_probes": self.config.max_history_probes,
+                    "max_ticker_requests": self.config.max_ticker_requests,
+                    "universe_refresh_seconds": self.config.universe_refresh_seconds,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
         }
         persisted = self.journal.metadata()
 
@@ -199,17 +257,14 @@ class PaperTradingService:
             return
 
         mismatches = []
+        missing = {}
         for key, value in expected.items():
             expected_value = self._canonical_metadata_value(
                 value
             )
             actual = persisted.get(key)
             if actual is None:
-                # Backward-compatible migration from the v0.10 journal.
-                self.journal.set_metadata(
-                    key,
-                    expected_value,
-                )
+                missing[key] = expected_value
                 continue
             if actual != expected_value:
                 mismatches.append(
@@ -225,34 +280,174 @@ class PaperTradingService:
                 + ". Use the original settings or a new journal."
             )
 
-    def _resolve_symbols(self) -> list[str]:
-        if not self.config.auto_universe:
-            return list(dict.fromkeys(self.config.symbols))
+        # Older journals did not record these settings. Preserve recovery,
+        # but explicitly mark that prior signal configuration is unverified.
+        # Do not mutate metadata at all if another invariant mismatched.
+        for key, value in missing.items():
+            self.journal.set_metadata(key, value)
+        migrated_policies = sorted(set(missing) & {"signal_policy", "universe_policy"})
+        if migrated_policies:
+            self.journal.set_metadata(
+                "config_migration_warnings",
+                json.dumps(
+                    [
+                        f"Legacy journal did not record {key}; current settings establish "
+                        "the restart baseline. Earlier settings cannot be verified."
+                        for key in migrated_policies
+                    ]
+                ),
+            )
 
-        selection = self.universe_factory(
-            exchange_id=self.config.exchange_id,
-            market_type=self.config.market_type,
-        ).select(
-            UniverseConfig(
-                market_type=self.config.market_type,
-                quote_currencies=self.config.quote_currencies,
-                max_markets=self.config.max_markets,
-                min_quote_volume=self.config.min_quote_volume,
-                max_spread_bps=self.config.max_spread_bps,
-                min_history_candles=(
-                    self.config.min_history_candles
-                ),
-                history_timeframe=self.config.timeframe,
-                max_history_probes=(
-                    self.config.max_history_probes
-                ),
-            )
+    def _now_timestamp(self) -> pd.Timestamp:
+        timestamp = pd.Timestamp(self._utc_now())
+        if pd.isna(timestamp):
+            raise ValueError("Paper service clock returned an invalid timestamp.")
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize("UTC")
+        else:
+            timestamp = timestamp.tz_convert("UTC")
+        return timestamp
+
+    def _utc_timestamp(self) -> str:
+        return self._now_timestamp().isoformat()
+
+    def _decision_time(self) -> pd.Timestamp:
+        if self._cycle_as_of is not None:
+            return self._cycle_as_of
+        return self._now_timestamp()
+
+    def _restore_universe_status(self) -> None:
+        raw = self.journal.metadata().get("universe_status", "{}")
+        try:
+            prior = json.loads(raw)
+        except (TypeError, ValueError):
+            prior = {}
+        self._universe_status = prior if isinstance(prior, dict) else {}
+        # A monotonic TTL cannot be restored across process lifetimes. Retain
+        # prior timestamps for diagnosis, never restore entry eligibility.
+        self._persist_universe_status(
+            status="pending_refresh" if self.config.auto_universe else "manual",
+            entry_eligible=False,
+            cached=False,
+            cache_age_seconds=None,
+            error=None,
         )
-        if not selection.symbols:
-            raise RuntimeError(
-                "Dynamic universe returned no eligible markets."
+
+    def _persist_universe_status(self, **updates) -> None:
+        self._universe_status.update(updates)
+        self._universe_status.update(
+            {
+                "mode": "auto" if self.config.auto_universe else "manual",
+                "exchange_id": self.config.exchange_id,
+                "market_type": self.config.market_type,
+                "refresh_seconds": self.config.universe_refresh_seconds,
+                "checked_at": self._utc_timestamp(),
+            }
+        )
+        self.journal.set_metadata(
+            "universe_status",
+            json.dumps(self._universe_status, sort_keys=True),
+        )
+
+    def _persist_heartbeat(self, **updates) -> None:
+        raw = self.journal.metadata().get("heartbeat", "{}")
+        try:
+            heartbeat = json.loads(raw)
+        except (TypeError, ValueError):
+            heartbeat = {}
+        if not isinstance(heartbeat, dict):
+            heartbeat = {}
+        heartbeat.update(updates)
+        self.journal.set_metadata(
+            "heartbeat", json.dumps(heartbeat, sort_keys=True)
+        )
+
+    def _resolve_symbols(self) -> list[str]:
+        self._universe_cached = False
+        if not self.config.auto_universe:
+            symbols = list(dict.fromkeys(self.config.symbols))
+            self._persist_universe_status(
+                status="manual", entry_eligible=bool(symbols), symbols=symbols,
+                selected_markets=len(symbols), cached=False, error=None,
+                warnings=[],
             )
-        return selection.symbols
+            return symbols
+
+        now = self._monotonic_clock()
+        if self._universe_selected_monotonic is not None:
+            age = now - self._universe_selected_monotonic
+            if 0 <= age < self.config.universe_refresh_seconds:
+                self._universe_cached = True
+                self._persist_universe_status(
+                    status="cached", entry_eligible=True, cached=True,
+                    cache_age_seconds=age,
+                )
+                return list(self._universe_symbols)
+
+        attempted_at = self._utc_timestamp()
+        self._universe_error = None
+        self._universe_warnings = ()
+        selection = None
+        try:
+            # Keep the selector and its CCXT client alive so its rate limiter
+            # and market cache survive refreshes.
+            if self._universe_selector is None:
+                self._universe_selector = self.universe_factory(
+                    exchange_id=self.config.exchange_id,
+                    market_type=self.config.market_type,
+                )
+            selection = self._universe_selector.select(
+                UniverseConfig(
+                    market_type=self.config.market_type,
+                    quote_currencies=self.config.quote_currencies,
+                    max_markets=self.config.max_markets,
+                    min_quote_volume=self.config.min_quote_volume,
+                    max_spread_bps=self.config.max_spread_bps,
+                    min_history_candles=self.config.min_history_candles,
+                    history_timeframe=self.config.timeframe,
+                    max_history_probes=self.config.max_history_probes,
+                    max_ticker_requests=self.config.max_ticker_requests,
+                )
+            )
+            self._universe_warnings = tuple(getattr(selection, "warnings", ()))
+            symbols = list(dict.fromkeys(selection.symbols))
+            if not symbols:
+                raise RuntimeError("Dynamic universe returned no eligible markets.")
+        except Exception as exc:
+            self._universe_error = f"{type(exc).__name__}: {exc}"
+            self._universe_selected_monotonic = None
+            details = {}
+            if selection is not None:
+                details = {
+                    "latest_attempt_total_markets": getattr(selection, "total_markets", None),
+                    "latest_attempt_eligible_markets": getattr(selection, "eligible_markets", None),
+                    "latest_attempt_rejected": getattr(selection, "rejected", {}),
+                }
+            self._persist_universe_status(
+                status="error", entry_eligible=False, cached=False,
+                cache_age_seconds=None,
+                last_attempt_at=attempted_at, error=self._universe_error,
+                warnings=list(self._universe_warnings), **details,
+            )
+            # Existing exposures are still included by _tracked_symbols.
+            # Never create fresh risk from the last successful, now stale list.
+            return []
+
+        self._universe_symbols = symbols
+        self._universe_selected_monotonic = self._monotonic_clock()
+        self._persist_universe_status(
+            status="fresh", entry_eligible=True, cached=False,
+            last_attempt_at=attempted_at, last_success_at=self._utc_timestamp(),
+            symbols=symbols, selected_markets=len(symbols), cache_age_seconds=0,
+            total_markets=getattr(selection, "total_markets", None),
+            eligible_markets=getattr(selection, "eligible_markets", None),
+            rejected=getattr(selection, "rejected", {}),
+            latest_attempt_total_markets=getattr(selection, "total_markets", None),
+            latest_attempt_eligible_markets=getattr(selection, "eligible_markets", None),
+            latest_attempt_rejected=getattr(selection, "rejected", {}),
+            error=None, warnings=list(self._universe_warnings),
+        )
+        return list(symbols)
 
     def _tracked_symbols(
         self,
@@ -298,26 +493,32 @@ class PaperTradingService:
             exchange_id=self.config.exchange_id,
             market_type=self.config.market_type,
         )
-        if data.empty or len(data) < 2:
-            return pd.DataFrame()
-
-        closed = data.iloc[:-1].copy()
-        if "timestamp" not in closed.columns:
+        if data.empty:
+            raise ValueError("Paper service received no usable market data.")
+        if "timestamp" not in data.columns:
             raise ValueError(
                 "Paper service market data requires timestamp."
             )
-        closed["timestamp"] = pd.to_datetime(
-            closed["timestamp"],
-            utc=True,
+        timestamps = pd.to_datetime(data["timestamp"], utc=True, errors="coerce")
+        if timestamps.isna().any():
+            raise ValueError("Invalid or missing candle timestamp(s).")
+        as_of = self._decision_time()
+        delta = pd.to_timedelta(
+            timeframe_to_milliseconds(self.config.timeframe), unit="ms",
         )
-        return (
-            closed.sort_values("timestamp")
-            .drop_duplicates(
-                subset=["timestamp"],
-                keep="last",
-            )
-            .reset_index(drop=True)
+        closed = data.loc[timestamps + delta <= as_of].copy()
+        closed["timestamp"] = timestamps.loc[closed.index]
+        quality = validate_ohlcv(
+            closed, timeframe=self.config.timeframe, min_rows=1,
         )
+        if not quality.valid or quality.missing_intervals:
+            raise ValueError("; ".join(quality.issues + quality.warnings))
+        if (
+            closed["timestamp"].iloc[-1] + delta
+            != latest_expected_close(as_of, self.config.timeframe)
+        ):
+            raise ValueError("Stale candles: latest expected closed interval is missing.")
+        return closed.reset_index(drop=True)
 
     def _process_unseen_candles(
         self,
@@ -374,23 +575,33 @@ class PaperTradingService:
         return processed, closed_trades, latest_time
 
     def _scanner(self) -> MarketScanner:
-        return self.scanner_factory(
-            exchange_id=self.config.exchange_id,
-            market_type=self.config.market_type,
-            timeframe=self.config.timeframe,
-            confirmation_timeframes=(
-                self.config.confirmation_timeframes
-            ),
-            entry_timeframe=self.config.entry_timeframe,
-            candle_limit=self.config.candle_limit,
-            account_equity=self.broker.account_equity(),
-            risk_percent=self.config.risk_percent,
-            min_confirmed_score=(
-                self.config.min_confirmed_score
-            ),
-            strategy_names=self.config.strategy_names,
-            data_fetcher=self._cached_data_fetcher,
-        )
+        kwargs = {
+            "exchange_id": self.config.exchange_id,
+            "market_type": self.config.market_type,
+            "timeframe": self.config.timeframe,
+            "confirmation_timeframes": self.config.confirmation_timeframes,
+            "entry_timeframe": self.config.entry_timeframe,
+            "candle_limit": self.config.candle_limit,
+            "account_equity": self.broker.account_equity(),
+            "risk_percent": self.config.risk_percent,
+            "min_confirmed_score": self.config.min_confirmed_score,
+            "strategy_names": self.config.strategy_names,
+            "data_fetcher": self._cached_data_fetcher,
+            "fee_rate": self.config.fee_rate,
+            "slippage_bps": self.config.slippage_bps,
+        }
+        # The real scanner supports `now`; keep older injected adapters that
+        # explicitly enumerate the original constructor arguments usable.
+        try:
+            parameters = inspect.signature(self.scanner_factory).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if "now" in parameters or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        ):
+            kwargs["now"] = self._decision_time
+        return self.scanner_factory(**kwargs)
 
     def _return_series(
         self,
@@ -467,6 +678,12 @@ class PaperTradingService:
         return correlations
 
     def run_once(self) -> PaperServiceRunReport:
+        self._cycle_as_of = self._now_timestamp()
+        self._persist_heartbeat(
+            status="running",
+            last_cycle_started_at=self._utc_timestamp(),
+            last_cycle_error=None,
+        )
         self._cycle_data_cache = {}
         scan_symbols = self._resolve_symbols()
         tracked_symbols = self._tracked_symbols(
@@ -527,6 +744,17 @@ class PaperTradingService:
                 and result.assessment.signal == order.signal
                 and result.assessment.strategy == order.strategy
             )
+            if order.event_id:
+                direction = 1 if order.signal == Signal.LONG else -1
+                cancel = order.cancel_price if order.cancel_price is not None else order.stop_loss
+                mark = self.broker.last_prices.get(order.symbol)
+                expected = "RANGE" if order.setup_type == "range_reversal" else ("BULL_TREND" if direction == 1 else "BEAR_TREND")
+                confirmations = getattr(result, "confirmations", ())
+                contexts_ok = all(c.error is None and c.regime is not None
+                                  and regime_alignment(order.signal, c.regime, order.strategy) is True for c in confirmations)
+                still_valid = (mark is not None and direction * (mark - cancel) > 0
+                               and result.structure is not None and result.structure.regime.value == expected
+                               and contexts_ok)
             if not still_valid:
                 self.broker.cancel_order(
                     order.order_id,
@@ -678,7 +906,7 @@ class PaperTradingService:
                 )
                 submitted += 1
 
-        return PaperServiceRunReport(
+        report = PaperServiceRunReport(
             scanned_markets=len(scan_symbols),
             managed_markets=len(tracked_symbols),
             new_candles=new_candles,
@@ -695,7 +923,19 @@ class PaperTradingService:
             weekly_loss_pct=risk_update.weekly_loss_pct,
             drawdown_pct=risk_update.drawdown_pct,
             snapshot=self.broker.snapshot(),
+            universe_error=self._universe_error,
+            universe_warnings=self._universe_warnings,
+            universe_cached=self._universe_cached,
+            universe_last_attempt_at=self._universe_status.get("last_attempt_at"),
+            universe_last_success_at=self._universe_status.get("last_success_at"),
         )
+        self._persist_heartbeat(
+            status="degraded" if self._universe_error or management_errors or scan_errors else "ok",
+            last_cycle_result="degraded" if self._universe_error or management_errors or scan_errors else "ok",
+            last_cycle_finished_at=self._utc_timestamp(),
+            last_cycle_error=None,
+        )
+        return report
 
     def run_forever(
         self,
@@ -710,6 +950,12 @@ class PaperTradingService:
             try:
                 report = self.run_once()
             except Exception as exc:
+                self._persist_heartbeat(
+                    status="error",
+                    last_cycle_result="error",
+                    last_cycle_finished_at=self._utc_timestamp(),
+                    last_cycle_error=f"{type(exc).__name__}: {exc}",
+                )
                 if on_error is None:
                     raise
                 on_error(exc)

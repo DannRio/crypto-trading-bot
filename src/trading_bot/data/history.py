@@ -4,6 +4,7 @@ import re
 import pandas as pd
 
 from trading_bot.data.market_data import OHLCV_COLUMNS, normalize_ohlcv
+from trading_bot.data.validation import latest_expected_close, validate_ohlcv
 from trading_bot.exchanges.ccxt_client import CCXTClient
 
 
@@ -76,6 +77,25 @@ def fetch_ohlcv_range(
         if not candles:
             break
 
+        # Pagination overlap is intentional; defects within an exchange page
+        # are not. Validate before normalize_ohlcv can sort/deduplicate them.
+        try:
+            page = pd.DataFrame(candles, columns=OHLCV_COLUMNS)
+            page["timestamp"] = pd.to_datetime(page["timestamp"], unit="ms", utc=True)
+            quality = validate_ohlcv(page, timeframe=timeframe)
+            single_unaligned = (
+                len(page) == 1
+                and latest_expected_close(page["timestamp"].iloc[0], timeframe)
+                != page["timestamp"].iloc[0]
+            )
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"Invalid downloaded OHLCV page {batches}: {exc}") from exc
+        if not quality.valid or quality.missing_intervals or single_unaligned:
+            issues = [*quality.issues, *quality.warnings]
+            if single_unaligned:
+                issues.append("Candle timestamp is not aligned to the requested timeframe.")
+            raise ValueError(f"Invalid downloaded OHLCV page {batches}: " + "; ".join(issues))
+
         rows.extend(
             candle
             for candle in candles
@@ -93,7 +113,12 @@ def fetch_ohlcv_range(
         if max_batches is not None and batches >= max_batches:
             break
 
-    return normalize_ohlcv(rows)
+    result = normalize_ohlcv(rows)
+    if not result.empty:
+        quality = validate_ohlcv(result, timeframe=timeframe)
+        if not quality.valid or quality.missing_intervals:
+            raise ValueError("Invalid downloaded OHLCV range: " + "; ".join((*quality.issues, *quality.warnings)))
+    return result
 
 
 def _safe_symbol(symbol: str) -> str:
@@ -142,12 +167,8 @@ class HistoricalDataStore:
             return pd.DataFrame(columns=OHLCV_COLUMNS)
 
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-        return (
-            df[OHLCV_COLUMNS]
-            .sort_values("timestamp")
-            .drop_duplicates(subset=["timestamp"], keep="last")
-            .reset_index(drop=True)
-        )
+        # Read faithfully: research validation must see unsorted/duplicate rows.
+        return df[OHLCV_COLUMNS].reset_index(drop=True)
 
     def upsert(
         self,
@@ -182,7 +203,7 @@ class HistoricalDataStore:
             )
             combined = (
                 combined[OHLCV_COLUMNS]
-                .sort_values("timestamp")
+                .sort_values("timestamp", kind="stable")
                 .drop_duplicates(subset=["timestamp"], keep="last")
                 .reset_index(drop=True)
             )

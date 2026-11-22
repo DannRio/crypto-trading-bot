@@ -1,4 +1,6 @@
 from dataclasses import replace
+from trading_bot.core.candle_execution import economic_break_even
+from trading_bot.paper.candle_execution import process_broker_candle
 from uuid import uuid4
 
 import pandas as pd
@@ -96,6 +98,7 @@ class PaperBroker:
         if fee_rate < 0 or slippage_bps < 0:
             raise ValueError("Fees and slippage cannot be negative.")
 
+        self.ambiguous_bars = 0
         self.starting_equity = starting_equity
         self.fee_rate = fee_rate
         self.slippage_bps = slippage_bps
@@ -311,6 +314,10 @@ class PaperBroker:
                 regime=str(row.regime),
                 strategy=str(row.strategy),
                 bars_remaining=int(row.bars_remaining),
+                event_id=row.event_id if pd.notna(row.event_id) else None,
+                setup_type=str(row.setup_type),
+                cancel_price=float(row.cancel_price) if pd.notna(row.cancel_price) else None,
+                break_even_mode=str(row.break_even_mode), risk_budget=float(row.risk_budget),
                 status=status,
                 filled_at=filled_at,
                 fill_price=(
@@ -401,6 +408,7 @@ class PaperBroker:
                     score=order.score,
                     regime=order.regime,
                     strategy=order.strategy,
+                    event_id=order.event_id, setup_type=order.setup_type, break_even_mode=order.break_even_mode,
                     initial_position_size=order.position_size,
                     initial_risk_amount=initial_risk_amount,
                     tp1_hit=order.tp1_hit,
@@ -452,6 +460,8 @@ class PaperBroker:
                 f"Exposure already exists for {symbol} {timeframe}."
             )
 
+        if self.has_setup_event(symbol, timeframe, setup.event_id):
+            raise ValueError("Setup event already consumed; a fresh event is required.")
         check = self.risk_manager.check_new_order(
             account_equity=self.account_equity(),
             symbol=symbol,
@@ -484,6 +494,8 @@ class PaperBroker:
             regime=regime,
             strategy=strategy,
             bars_remaining=expires_after_bars,
+            event_id=setup.event_id, setup_type=setup.setup_type, cancel_price=setup.cancel_price,
+            break_even_mode=setup.break_even_mode, risk_budget=setup.target_risk_amount,
             take_profit_1_fraction=(
                 setup.take_profit_1_fraction
             ),
@@ -495,6 +507,13 @@ class PaperBroker:
         if self.journal:
             self.journal.save_order(order)
         return order
+
+    def has_setup_event(self, symbol, timeframe, event_id):
+        if not event_id:
+            return False
+        if any(o.symbol == symbol and o.timeframe == timeframe and o.event_id == event_id for o in self.orders.values()):
+            return True
+        return bool(self.journal and self.journal.has_setup_event(symbol, timeframe, event_id))
 
     def cancel_order(
         self,
@@ -527,6 +546,12 @@ class PaperBroker:
             order.signal,
             self.slippage_bps,
         )
+        direction = 1 if order.signal == Signal.LONG else -1
+        stop_fill = _exit_with_slippage(order.stop_loss, order.signal, self.slippage_bps)
+        loss_per_unit = direction * (fill_price - stop_fill) + self.fee_rate * (fill_price + stop_fill)
+        budget = order.risk_budget if order.risk_budget > 0 else order.planned_risk
+        order.position_size = min(order.position_size, budget / loss_per_unit,
+                                  self.account_equity() / (fill_price * (1 + self.fee_rate)))
         entry_fee = (
             fill_price
             * order.position_size
@@ -563,6 +588,7 @@ class PaperBroker:
             score=order.score,
             regime=order.regime,
             strategy=order.strategy,
+            event_id=order.event_id, setup_type=order.setup_type, break_even_mode=order.break_even_mode,
             initial_position_size=order.position_size,
             initial_risk_amount=initial_risk,
             tp1_hit=False,
@@ -628,7 +654,11 @@ class PaperBroker:
         position.tp1_hit = True
 
         if position.move_stop_to_break_even_after_tp1:
-            position.effective_stop = position.entry_price
+            stop = economic_break_even(position.entry_price, position.signal, self.fee_rate,
+                                       self.slippage_bps, position.break_even_mode)
+            if ((position.signal == Signal.LONG and stop < position.take_profit_1)
+                    or (position.signal == Signal.SHORT and stop > position.take_profit_1)):
+                position.effective_stop = stop
 
         position.risk_amount = (
             abs(
@@ -744,7 +774,7 @@ class PaperBroker:
             score=position.score,
             regime=position.regime,
             strategy=position.strategy,
-            tp1_hit=position.tp1_hit,
+            tp1_hit=position.tp1_hit, event_id=position.event_id, setup_type=position.setup_type,
         )
 
         order = self.orders[position.order_id]
@@ -779,128 +809,7 @@ class PaperBroker:
         timeframe: str,
         candle,
     ) -> list[PaperTrade]:
-        timestamp = _timestamp(candle["timestamp"])
-        high = float(candle["high"])
-        low = float(candle["low"])
-        close = float(candle["close"])
-        self.last_prices[symbol] = close
-
-        key = (symbol, timeframe)
-
-        for order in list(self.pending_orders):
-            if (
-                order.symbol != symbol
-                or order.timeframe != timeframe
-            ):
-                continue
-
-            raw_entry = _entry_price_from_zone(
-                order,
-                candle,
-            )
-            if raw_entry is not None:
-                self._fill_order(
-                    order,
-                    timestamp,
-                    raw_entry,
-                )
-            else:
-                order.bars_remaining -= 1
-                if order.bars_remaining <= 0:
-                    order.status = PaperOrderStatus.EXPIRED
-                    order.exit_reason = "ENTRY_EXPIRED"
-                if self.journal:
-                    self.journal.save_order(order)
-
-        closed: list[PaperTrade] = []
-        position = self.positions.get(key)
-        if position is None:
-            return closed
-
-        effective_stop = (
-            position.effective_stop
-            if position.effective_stop is not None
-            else position.stop_loss
-        )
-
-        if position.signal == Signal.LONG:
-            hit_stop = low <= effective_stop
-            hit_tp1 = (
-                not position.tp1_hit
-                and position.take_profit_1_fraction > 0
-                and high >= position.take_profit_1
-            )
-            hit_tp2 = high >= position.take_profit_2
-        else:
-            hit_stop = high >= effective_stop
-            hit_tp1 = (
-                not position.tp1_hit
-                and position.take_profit_1_fraction > 0
-                and low <= position.take_profit_1
-            )
-            hit_tp2 = low <= position.take_profit_2
-
-        if hit_stop:
-            closed.append(
-                self._close_position(
-                    key,
-                    effective_stop,
-                    timestamp,
-                    (
-                        "STOP_LOSS_AFTER_TP1"
-                        if position.tp1_hit
-                        else "STOP_LOSS"
-                    ),
-                )
-            )
-            return closed
-
-        if hit_tp1:
-            self._take_tp1(key)
-            position = self.positions.get(key)
-            if position is None:
-                return closed
-
-        effective_stop = (
-            position.effective_stop
-            if position.effective_stop is not None
-            else position.stop_loss
-        )
-        if position.signal == Signal.LONG:
-            stop_after_tp1 = (
-                position.tp1_hit
-                and low <= effective_stop
-            )
-        else:
-            stop_after_tp1 = (
-                position.tp1_hit
-                and high >= effective_stop
-            )
-
-        if stop_after_tp1:
-            closed.append(
-                self._close_position(
-                    key,
-                    effective_stop,
-                    timestamp,
-                    "STOP_LOSS_AFTER_TP1",
-                )
-            )
-        elif hit_tp2:
-            closed.append(
-                self._close_position(
-                    key,
-                    position.take_profit_2,
-                    timestamp,
-                    (
-                        "TAKE_PROFIT_2_AFTER_TP1"
-                        if position.tp1_hit
-                        else "TAKE_PROFIT_2"
-                    ),
-                )
-            )
-
-        return closed
+        return process_broker_candle(self, symbol, timeframe, candle)
 
     def close_all(
         self,

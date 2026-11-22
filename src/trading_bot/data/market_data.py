@@ -1,6 +1,6 @@
 import pandas as pd
 
-from trading_bot.exchanges.ccxt_client import CCXTClient
+from trading_bot.exchanges.ccxt_client import get_public_client
 
 
 OHLCV_COLUMNS = [
@@ -25,7 +25,7 @@ def normalize_ohlcv(candles: list) -> pd.DataFrame:
     )
 
     return (
-        df.sort_values("timestamp")
+        df.sort_values("timestamp", kind="stable")
         .drop_duplicates(subset=["timestamp"], keep="last")
         .reset_index(drop=True)
     )
@@ -36,7 +36,7 @@ def get_ticker(
     exchange_id: str = "kraken",
     market_type: str = "spot",
 ):
-    client = CCXTClient(
+    client = get_public_client(
         exchange_id=exchange_id,
         market_type=market_type,
     )
@@ -51,7 +51,7 @@ def get_ohlcv(
     market_type: str = "spot",
     since: int | None = None,
 ) -> pd.DataFrame:
-    client = CCXTClient(
+    client = get_public_client(
         exchange_id=exchange_id,
         market_type=market_type,
     )
@@ -61,4 +61,10 @@ def get_ohlcv(
         limit=limit,
         since=since,
     )
-    return normalize_ohlcv(candles)
+    # Preserve upstream defects so the scanner can reject them. Historical
+    # pagination uses normalize_ohlcv separately to merge overlapping batches.
+    if not candles:
+        return pd.DataFrame(columns=OHLCV_COLUMNS)
+    frame = pd.DataFrame(candles, columns=OHLCV_COLUMNS)
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], unit="ms", utc=True)
+    return frame

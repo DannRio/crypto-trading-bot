@@ -65,6 +65,7 @@ def test_journal_persists_closed_trade(tmp_path):
                 "2026-01-01 02:00:00",
                 tz="UTC",
             ),
+            "open": 101.0,
             "high": 111.0,
             "low": 100.0,
             "close": 110.0,

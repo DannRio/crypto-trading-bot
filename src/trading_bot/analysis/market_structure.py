@@ -51,7 +51,35 @@ def analyze_market_structure(
     elif close < ema_50 < ema_200:
         regime = MarketRegime.BEAR_TREND
     else:
-        regime = MarketRegime.RANGE
+        # An EMA disagreement is not evidence of a tradable range.
+        # Only classify as RANGE when EMA separation and recent EMA50
+        # drift are small relative to ATR; otherwise the regime is
+        # transitional/unknown and range entries are disabled.
+        prior_ema50 = float(df.iloc[-min(len(df), 11)]["ema_50"])
+        ema_spread_atr = abs(ema_50 - ema_200) / atr if atr > 0 else float("inf")
+        ema_drift_atr = abs(ema_50 - prior_ema50) / atr if atr > 0 else float("inf")
+        def independent_touches(values, boundary):
+            last = -3
+            count = 0
+            for i, value in enumerate(values):
+                if abs(float(value) - boundary) <= 0.35 * atr and i - last >= 3:
+                    count += 1
+                    last = i
+            return count
+        stable_bounds = (
+            independent_touches(reference["low"], support) >= 2
+            and independent_touches(reference["high"], resistance) >= 2
+        )
+        if (
+            stable_bounds
+            and atr > 0
+            and ema_spread_atr <= 1.0
+            and ema_drift_atr <= 0.5
+            and support <= close <= resistance
+        ):
+            regime = MarketRegime.RANGE
+        else:
+            regime = MarketRegime.UNKNOWN
 
     atr_pct = atr / close if close > 0 and pd.notna(atr) else 0.0
     if (

@@ -1,6 +1,7 @@
 import argparse
 
 import pandas as pd
+from trading_bot.config import apply_profile
 
 from trading_bot.data import HistoricalDataStore, validate_ohlcv
 from trading_bot.paper import (
@@ -42,19 +43,20 @@ def _add_dataset_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--profile", help="Shared preset (liquid-spot, broad-spot, liquid-perps) or JSON file.")
     parser.add_argument("--exchange", default="kraken")
     parser.add_argument("--market-type", default="spot")
     parser.add_argument(
         "--symbols",
-        default="BTC/USDT,ETH/USDT,SOL/USDT",
+        default="",
         help="Comma-separated symbols used when auto-universe is disabled.",
     )
-    parser.add_argument("--auto-universe", action="store_true")
+    parser.add_argument("--auto-universe", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument(
         "--quote-currencies",
         default="USDT",
     )
-    parser.add_argument("--max-markets", type=int, default=20)
+    parser.add_argument("--max-markets", type=int, default=30)
     parser.add_argument(
         "--min-quote-volume",
         type=float,
@@ -69,8 +71,11 @@ def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-history-probes",
         type=int,
-        default=60,
+        default=100,
     )
+    parser.add_argument("--max-ticker-requests", type=int, default=200)
+    parser.add_argument("--universe-refresh-seconds", type=float, default=900)
+    parser.add_argument("--limit", type=int, default=500, help="Candles requested per timeframe.")
     parser.add_argument("--timeframe", default="1h")
     parser.add_argument(
         "--confirm-timeframes",
@@ -87,7 +92,7 @@ def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--min-score", type=int, default=70)
     parser.add_argument(
         "--strategies",
-        default="trend_continuation",
+        default="trend_continuation_v2",
     )
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--slippage-bps", type=float, default=5.0)
@@ -134,7 +139,8 @@ def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--allow-missing-correlation-data",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=False,
     )
     parser.add_argument(
         "--max-daily-loss-percent",
@@ -174,6 +180,7 @@ def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
+        allow_abbrev=False,
         description="Run and inspect read-only paper trading simulations."
     )
     subparsers = parser.add_subparsers(
@@ -191,7 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
     compare = subparsers.add_parser("compare")
     _add_dataset_args(compare)
 
-    daemon = subparsers.add_parser("daemon")
+    daemon = subparsers.add_parser("daemon", allow_abbrev=False)
     _add_daemon_args(daemon)
 
     status = subparsers.add_parser("status")
@@ -415,6 +422,10 @@ def _print_service_report(report) -> None:
         f"open={snapshot.open_positions} "
         f"pending={snapshot.pending_orders}"
     )
+    if report.universe_error:
+        print(f"Universe unavailable; managing existing exposure only: {report.universe_error}")
+    for warning in report.universe_warnings:
+        print(f"Universe warning: {warning}")
 
 
 def _daemon(args) -> int:
@@ -443,6 +454,9 @@ def _daemon(args) -> int:
         max_spread_bps=args.max_spread_bps,
         min_history_candles=args.min_history_candles,
         max_history_probes=args.max_history_probes,
+        max_ticker_requests=args.max_ticker_requests,
+        universe_refresh_seconds=args.universe_refresh_seconds,
+        candle_limit=args.limit,
         starting_equity=args.equity,
         risk_percent=args.risk_percent / 100,
         min_confirmed_score=args.min_score,
@@ -651,7 +665,12 @@ def _risk_reset(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        args = apply_profile(args, argv)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if args.command == "replay":
         return _replay(args)

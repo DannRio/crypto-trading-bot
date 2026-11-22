@@ -43,7 +43,8 @@ def run_paper_replay(
             account_equity=broker.account_equity(),
             risk_percent=risk_percent,
             min_confirmed_score=min_confirmed_score,
-            strategy_names=strategy_names,
+            strategy_names=strategy_names, allow_short=allow_short,
+            fee_rate=broker.fee_rate, slippage_bps=broker.slippage_bps,
         ).evaluate(history)
 
         # Revalidate unfilled orders at candle close. A pending thesis may
@@ -63,6 +64,11 @@ def run_paper_replay(
                 and decision.assessment.strategy
                 == order.strategy
             )
+            if order.event_id:
+                direction = 1 if order.signal == Signal.LONG else -1
+                cancel = order.cancel_price if order.cancel_price is not None else order.stop_loss
+                expected_regime = "RANGE" if order.setup_type == "range_reversal" else ("BULL_TREND" if direction == 1 else "BEAR_TREND")
+                still_valid = direction * (float(candle["close"]) - cancel) > 0 and decision.structure.regime.value == expected_regime
             if not still_valid:
                 broker.cancel_order(
                     order.order_id,
@@ -85,6 +91,8 @@ def run_paper_replay(
         ):
             continue
 
+        if broker.has_setup_event(symbol, timeframe, decision.setup.event_id):
+            continue
         broker.submit_setup(
             symbol=symbol,
             timeframe=timeframe,

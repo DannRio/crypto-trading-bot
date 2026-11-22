@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import math
 
 from trading_bot.core.enums import Signal, SetupStatus
 
@@ -15,6 +16,10 @@ class TradePlanConfig:
     take_profit_1_fraction: float = 0.5
     move_stop_to_break_even_after_tp1: bool = True
 
+    target_mode: str = "auto"
+    min_target_net_rr: float = 1.0
+    break_even_mode: str = "cost"
+
     def __post_init__(self):
         positive = {
             "atr_stop_multiplier": self.atr_stop_multiplier,
@@ -28,13 +33,19 @@ class TradePlanConfig:
         invalid = [
             name
             for name, value in positive.items()
-            if value <= 0
+            if not math.isfinite(value) or value <= 0
         ]
         if invalid:
             raise ValueError(
                 "Trade-plan parameters must be positive: "
                 + ", ".join(invalid)
             )
+        if self.target_mode not in {"auto", "fixed_r"}:
+            raise ValueError("target_mode must be auto or fixed_r.")
+        if self.break_even_mode not in {"price", "cost"}:
+            raise ValueError("break_even_mode must be price or cost.")
+        if not math.isfinite(self.min_target_net_rr) or self.min_target_net_rr < 0:
+            raise ValueError("min_target_net_rr must be finite and non-negative.")
         if self.reward_to_risk_2 < self.reward_to_risk_1:
             raise ValueError(
                 "reward_to_risk_2 must be >= reward_to_risk_1."
@@ -65,3 +76,10 @@ class TradeSetup:
     reasons: tuple[str, ...]
     take_profit_1_fraction: float = 0.5
     move_stop_to_break_even_after_tp1: bool = True
+    event_id: str | None = None
+    setup_type: str = "legacy_state"
+    anchor_price: float | None = None
+    cancel_price: float | None = None
+    event_time: str | None = None
+    break_even_mode: str = "cost"
+    net_reward_to_risk: float | None = None

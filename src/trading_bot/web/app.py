@@ -5,6 +5,7 @@ Bind locally (127.0.0.1); this development API has no user authentication.
 """
 from dataclasses import asdict, is_dataclass
 from enum import Enum
+import json
 import logging
 import math
 import os
@@ -22,6 +23,10 @@ from trading_bot.assisted import (
     IntentStore,
 )
 from trading_bot.backtesting import run_decision_backtest
+from trading_bot.config import builtin_profiles
+from trading_bot.research.diagnostics import trade_diagnostics
+from trading_bot.research.exit_ablation import run_exit_ablation
+from trading_bot.research.evaluation import run_out_of_sample_evaluation
 from trading_bot.execution import (
     LiveExecutionGuard,
     ManagedDryRunBrokerAdapter,
@@ -39,9 +44,10 @@ from trading_bot.scanner import (
     UniverseConfig,
 )
 from trading_bot.strategies import normalize_strategy_names
+from trading_bot.scanner.multi_timeframe import validate_confirmation_timeframes, validate_entry_timeframe
 
 log = logging.getLogger(__name__)
-app = FastAPI(title="Trading Bot — Research & Assisted Dashboard", version="0.16.0")
+app = FastAPI(title="Trading Bot — Research & Assisted Dashboard", version="0.17.0")
 
 EXCHANGES = {"kraken", "kucoin", "binance", "bybit", "okx", "coinbase"}
 MARKET_TYPES = {"spot", "swap", "future"}
@@ -105,6 +111,8 @@ class StageIntentRequest(BaseModel):
     equity: float = 10_000
     risk_percent: float = 1.0
     min_score: int = 70
+    fee_rate: float = Field(0.001, ge=0, le=0.05)
+    slippage_bps: float = Field(5.0, ge=0, le=500)
     strategies: list[str] = Field(
         default_factory=lambda: ["trend_continuation"]
     )
@@ -150,8 +158,8 @@ def _validate_symbol(symbol: str) -> str:
 
 def _parse_symbols(raw: str) -> list[str]:
     symbols = [_validate_symbol(piece) for piece in raw.split(",")]
-    if not 1 <= len(symbols) <= 8 or len(set(symbols)) != len(symbols):
-        raise HTTPException(422, "Provide 1–8 different symbols.")
+    if not 1 <= len(symbols) <= 100 or len(set(symbols)) != len(symbols):
+        raise HTTPException(422, "Provide 1–100 different symbols.")
     return symbols
 
 
@@ -249,6 +257,19 @@ def health():
     return {"mode": "READ_ONLY", "live_execution": False, "paper_execution": False}
 
 
+@app.get("/api/profiles")
+def configuration_profiles():
+    return {"profiles": _safe(builtin_profiles()), "live_execution": False}
+
+
+def _metadata_json(metadata: dict, key: str) -> dict:
+    try:
+        value = json.loads(metadata.get(key, "{}"))
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 
 
 @app.get("/api/paper/status")
@@ -263,6 +284,7 @@ def paper_status(
         checkpoints = journal.checkpoints()
         signals = journal.signal_events(limit=limit)
         risk_state = journal.load_risk_state()
+        metadata = journal.metadata()
 
         pending = (
             active[active["status"] == "PENDING"]
@@ -282,7 +304,9 @@ def paper_status(
 
         return {
             "journal": str(PAPER_JOURNAL_PATH),
-            "metadata": journal.metadata(),
+            "metadata": metadata,
+            "universe": _metadata_json(metadata, "universe_status"),
+            "heartbeat": _metadata_json(metadata, "heartbeat"),
             "summary": {
                 "pending_orders": len(pending),
                 "open_positions": len(filled),
@@ -310,22 +334,25 @@ def paper_status(
 def scan(
     exchange: str = Query("kraken", max_length=30),
     market_type: str = Query("spot"),
-    symbols: str = Query("BTC/USD,ETH/USD", max_length=400),
-    timeframe: str = Query("15m"),
+    symbols: str = Query("", max_length=5100),
+    timeframe: str = Query("1h"),
     confirm_timeframes: str = Query("", max_length=100),
     entry_timeframe: str = Query("", max_length=20),
     limit: int = Query(500, ge=250, le=1000),
     equity: float = Query(10000.0, gt=0, le=100_000_000),
     risk_percent: float = Query(1.0, gt=0, le=5),
     min_score: int = Query(70, ge=0, le=100),
-    strategies: str = Query("trend_continuation", max_length=200),
-    auto_universe: bool = Query(False),
+    strategies: str = Query("trend_continuation_v2", max_length=200),
+    auto_universe: bool | None = Query(None),
     quote_currencies: str = Query("USDT", max_length=100),
-    max_markets: int = Query(20, ge=1, le=50),
+    max_markets: int = Query(30, ge=1, le=100),
     min_quote_volume: float = Query(1_000_000, ge=0),
     max_spread_bps: float | None = Query(None, gt=0, le=10_000),
     min_history_candles: int = Query(220, ge=0, le=5000),
-    max_history_probes: int = Query(60, ge=1, le=500),
+    max_history_probes: int = Query(100, ge=1, le=500),
+    max_ticker_requests: int = Query(200, ge=1, le=5000),
+    fee_rate: float = Query(0.001, ge=0, le=0.05),
+    slippage_bps: float = Query(5.0, ge=0, le=500),
 ):
     _validate_exchange(exchange, market_type, timeframe)
     confirmation_timeframes = _parse_timeframes(confirm_timeframes)
@@ -333,6 +360,13 @@ def scan(
     if entry_timeframe and entry_timeframe not in TIMEFRAMES:
         raise HTTPException(422, "Unsupported entry timeframe.")
     strategy_names = _parse_strategies(strategies)
+    try:
+        validate_confirmation_timeframes(timeframe, confirmation_timeframes)
+        validate_entry_timeframe(timeframe, entry_timeframe or None)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if auto_universe is None:
+        auto_universe = not bool(symbols.strip())
     universe_selection = None
 
     if auto_universe:
@@ -351,6 +385,7 @@ def scan(
                     min_history_candles=min_history_candles,
                     history_timeframe=timeframe,
                     max_history_probes=max_history_probes,
+                    max_ticker_requests=max_ticker_requests,
                 )
             )
         except ValueError as exc:
@@ -383,6 +418,8 @@ def scan(
             risk_percent=risk_percent / 100,
             min_confirmed_score=min_score,
             strategy_names=strategy_names,
+            fee_rate=fee_rate,
+            slippage_bps=slippage_bps,
         )
         results = scanner.scan(markets)
     except ValueError as exc:
@@ -556,6 +593,8 @@ def assisted_stage(request: StageIntentRequest):
             risk_percent=request.risk_percent / 100,
             min_confirmed_score=request.min_score,
             strategy_names=strategy_names,
+            fee_rate=request.fee_rate,
+            slippage_bps=request.slippage_bps,
         )
         result = scanner.scan_symbol(symbol)
     except ValueError as exc:
@@ -729,14 +768,41 @@ def backtest(
     risk_percent: float = Query(1.0, gt=0, le=5),
     min_score: int = Query(70, ge=0, le=100),
     strategies: str = Query("trend_continuation", max_length=200),
+    confirm_timeframes: str = Query("", max_length=100),
+    entry_timeframe: str = Query("", max_length=20),
+    execution_timeframe: str = Query("", max_length=20),
+    compare_exits: bool = Query(False),
+    validate_oos: bool = Query(False),
     fee_rate: float = Query(0.001, ge=0, le=0.05),
     slippage_bps: float = Query(5.0, ge=0, le=500),
 ):
     _validate_exchange(exchange, market_type, timeframe)
     symbol = _validate_symbol(symbol)
     strategy_names = _parse_strategies(strategies)
+    htf = _parse_timeframes(confirm_timeframes)
+    ltf = entry_timeframe.strip() or None
+    execution_tf = execution_timeframe.strip() or None
+    from trading_bot.scanner.multi_timeframe import (
+        validate_confirmation_timeframes,
+        validate_entry_timeframe,
+    )
+    try:
+        htf = validate_confirmation_timeframes(timeframe, htf)
+        ltf = validate_entry_timeframe(timeframe, ltf)
+        execution_tf = validate_entry_timeframe(timeframe, execution_tf)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if validate_oos and data_source != "local":
+        raise HTTPException(422, "Chronological validation requires saved local multi-year data.")
+    if (htf or ltf or execution_tf) and data_source != "local":
+        raise HTTPException(
+            422,
+            "Historical multi-timeframe confirmation requires saved local "
+            "datasets for every selected timeframe.",
+        )
 
     try:
+        secondary_data = {}
         if data_source == "local":
             store, dataset_path, checked_paths = (
                 _history_store_for_dataset(
@@ -797,6 +863,21 @@ def backtest(
 
             closed = filtered.reset_index(drop=True)
             source_path = str(dataset_path)
+
+            for extra_timeframe in dict.fromkeys((*htf, *((ltf,) if ltf else ()), *((execution_tf,) if execution_tf else ()))):
+                extra_store, extra_path, extra_checked = _history_store_for_dataset(
+                    exchange, market_type, symbol, extra_timeframe
+                )
+                extra_candles = extra_store.load(
+                    exchange, market_type, symbol, extra_timeframe
+                )
+                if extra_candles.empty:
+                    checked = " | ".join(str(path) for path in extra_checked)
+                    raise HTTPException(
+                        404,
+                        f"Missing {extra_timeframe} confirmation dataset. Checked: {checked}",
+                    )
+                secondary_data[extra_timeframe] = extra_candles
         else:
             candles = get_ohlcv(
                 symbol=symbol,
@@ -817,7 +898,13 @@ def backtest(
         if not quality.valid:
             raise HTTPException(
                 422,
-                "Not enough valid closed candles for backtesting.",
+                "Historical dataset failed validation for "
+                f"{exchange}/{market_type}/{symbol}/{timeframe}: "
+                + "; ".join(quality.issues)
+                + (
+                    f" Source: {source_path}"
+                    if source_path is not None else ""
+                ),
             )
 
         result = run_decision_backtest(
@@ -829,6 +916,11 @@ def backtest(
             slippage_bps=slippage_bps,
             allow_short=market_type != "spot",
             strategy_names=strategy_names,
+            primary_timeframe=timeframe,
+            confirmation_timeframes=htf,
+            entry_timeframe=ltf,
+            secondary_data=secondary_data,
+            execution_timeframe=execution_tf,
         )
     except HTTPException:
         raise
@@ -843,6 +935,52 @@ def backtest(
             502,
             "Market data or backtesting failed.",
         )
+
+    exit_ablation = None
+    if compare_exits:
+        exit_ablation_frame, _ = run_exit_ablation(
+            closed,
+            initial_equity=equity,
+            risk_percent=risk_percent / 100,
+            min_confirmed_score=min_score,
+            fee_rate=fee_rate,
+            slippage_bps=slippage_bps,
+            allow_short=market_type != "spot",
+            strategy_names=strategy_names,
+            primary_timeframe=timeframe,
+            confirmation_timeframes=htf,
+            entry_timeframe=ltf,
+            execution_timeframe=execution_tf,
+            secondary_data=secondary_data,
+        )
+        exit_ablation = _safe(exit_ablation_frame.to_dict("records"))
+
+    oos_summary = None
+    if validate_oos:
+        if len(closed) < 1500:
+            raise HTTPException(
+                422, "At least 1500 historical candles required for train/validation/test."
+            )
+        train_cut = closed["timestamp"].iloc[int(len(closed) * 0.60)]
+        validation_cut = closed["timestamp"].iloc[int(len(closed) * 0.80)]
+        oos_frame, _ = run_out_of_sample_evaluation(
+            closed,
+            train_cutoff=train_cut,
+            validation_cutoff=validation_cut,
+            initial_equity=equity,
+            risk_percent=risk_percent / 100,
+            min_confirmed_score=min_score,
+            fee_rate=fee_rate,
+            slippage_bps=slippage_bps,
+            allow_short=market_type != "spot",
+            strategy_names=strategy_names,
+            primary_timeframe=timeframe,
+            confirmation_timeframes=htf,
+            entry_timeframe=ltf,
+            execution_timeframe=execution_tf,
+            secondary_data=secondary_data,
+        )
+        oos_summary = _safe(oos_frame.to_dict("records"))
 
     data_start = (
         closed["timestamp"].min()
@@ -866,11 +1004,14 @@ def backtest(
         "data_start": _safe(data_start),
         "data_end": _safe(data_end),
         "strategies": list(strategy_names),
+        "confirmation_timeframes": list(htf),
+        "entry_timeframe": ltf,
+        "execution_timeframe": execution_tf,
         "assumptions": {
             "fee_rate_per_side": fee_rate,
             "slippage_bps_per_side": slippage_bps,
             "min_score": min_score,
-            "single_timeframe_only": True,
+            "single_timeframe_only": not bool(htf or ltf or execution_tf),
         },
         "metrics": _safe({
             "initial_equity": result.initial_equity,
@@ -885,10 +1026,18 @@ def backtest(
         "recent_trades": _safe(
             result.trades.tail(10).to_dict("records")
         ),
+        "diagnostics": _safe(trade_diagnostics(result.trades, equity)),
+        "execution_diagnostics": _safe(result.execution_diagnostics),
+        "mark_to_market_equity": _safe(result.equity_curve),
+        "exit_ablation": exit_ablation,
+        "chronological_validation": oos_summary,
         "warning": (
-            "This historical backtest is single-timeframe. "
-            "Scanner higher-timeframe confirmation and lower-timeframe "
-            "entry-trigger filters are not applied by this endpoint yet."
+            "Historical MTF confirmation is as-of closed candles. Intrabar "
+            "fills are resolved with lower timeframe OHLC when an execution "
+            "timeframe is selected; events inside each child candle remain "
+            "ambiguous and are resolved conservatively."
+            if htf or ltf or execution_tf else
+            "Single-timeframe baseline; scanner MTF gates are not applied."
         ),
     }
 

@@ -162,6 +162,7 @@ def run_parameter_experiments(
     base_strategy_parameters: dict[str, dict] | None = None,
     base_trade_plan_config: TradePlanConfig | None = None,
     max_combinations: int = 500,
+    primary_timeframe: str = "1h",
 ) -> pd.DataFrame:
     """Evaluate a declared parameter grid on TRAIN data only.
 
@@ -186,6 +187,7 @@ def run_parameter_experiments(
 
     for parameters in combinations:
         backtest_kwargs = {
+            "primary_timeframe": primary_timeframe,
             "initial_equity": initial_equity,
             "risk_percent": risk_percent,
             "min_confirmed_score": base_min_confirmed_score,
@@ -234,6 +236,7 @@ def run_parameter_experiments(
             )
 
         effective_config = {
+            "primary_timeframe": primary_timeframe,
             "strategies": list(strategies),
             "grid_parameters": parameters,
             "initial_equity": initial_equity,
